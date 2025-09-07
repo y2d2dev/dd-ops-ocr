@@ -1,0 +1,17 @@
+pyyaml
+python-dotenv
+PyMuPDF
+Pillow
+opencv-python-headless
+numpy
+google-generativeai
+google-cloud-documentai
+ultralytics
+
+# Development dependencies
+black
+flake8
+mypy
+isort
+pytest
+pytest-cov
