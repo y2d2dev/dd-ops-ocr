@@ -3,7 +3,7 @@
 # Cloud Run デプロイスクリプト (512MB最適化版)
 
 # 設定
-PROJECT_ID="your-project-id"
+PROJECT_ID="reflected-flux-462908-s6"
 SERVICE_NAME="dd-ops-ocr-api"
 REGION="asia-northeast1"  # 東京リージョン
 IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
@@ -35,9 +35,8 @@ gcloud run deploy $SERVICE_NAME \
   --min-instances 0 \
   --cpu-throttling \
   --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID" \
-  --set-env-vars "GCS_BUCKET_NAME=your-bucket-name" \
+  --set-env-vars "GCS_BUCKET_NAME=app_contracts_staging" \
   --set-env-vars "DD_OPS_MODELS_BUCKET=dd_ops_models" \
-  --set-env-vars "PORT=8080" \
   --set-env-vars "PYTHONDONTWRITEBYTECODE=1" \
   --set-env-vars "PYTHONUNBUFFERED=1"
 

@@ -7,15 +7,15 @@ from flask import Flask, request, jsonify
 from datetime import datetime
 import traceback
 from typing import Dict, Any, Optional
+import google.generativeai as genai
+import subprocess
+import sys
+from pathlib import Path
 
 # UTF-8エンコーディングを確実にする
 os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 os.environ.setdefault('LANG', 'ja_JP.UTF-8')
 os.environ.setdefault('LC_ALL', 'ja_JP.UTF-8')
-
-import subprocess
-import sys
-from pathlib import Path
 from src.api.model_downloader import ensure_models_available
 
 app = Flask(__name__)
@@ -595,64 +595,61 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
         if not result_dir.exists():
             result_dir = Path("/tmp/result")
         output_files = []
-        contract_json_path = None
         
         if result_dir.exists():
             # 最新のファイルを検索（タイムスタンプ付きファイル）
             for result_file in result_dir.glob("*"):
                 if result_file.is_file():
-                    # GCSのパスを生成
+                    # 契約書メタデータJSONは保存しない
                     if result_file.suffix == '.json' and 'integration_metadata' in result_file.name:
-                        # メタデータJSONをafter_ocrに保存
+                        logger.info(f"🚫 Skipping contract metadata JSON: {result_file.name}")
+                        continue
+                    
+                    # その他のファイルをocr_resultsに保存
+                    output_prefix = f"{workspace_id}/{project_id}/ocr_results/"
+                    gcs_path = upload_file_to_gcs(
+                        str(result_file),
+                        output_bucket,
+                        output_prefix + result_file.name
+                    )
+                    output_files.append(gcs_path)
+                    logger.info(f"✅ Result file uploaded to: {gcs_path}")
+        
+        # 統合されたファイルを探してGeminiで構造化
+        structured_json_path = None
+        logger.info(f"🔍 Looking for integrated files to structure. Found {len(output_files)} files: {output_files}")
+        for output_file in output_files:
+            logger.info(f"🔍 Checking file: {output_file}")
+            # 統合されたファイル（通常は最大のテキストファイル）を特定
+            if 'integrated' in output_file or output_file.endswith('.txt'):
+                logger.info(f"🎯 Found integrated file for structuring: {output_file}")
+                try:
+                    logger.info(f"🧠 Starting Gemini structured output for: {output_file}")
+                    # Geminiの構造化出力を使用
+                    structured_result = convert_to_contract_schema(output_file, basename)
+                    if structured_result:
+                        # 構造化されたJSONをafter_ocrに保存
                         json_output_path = f"{workspace_id}/{project_id}/after_ocr/{basename}.json"
-                        json_gcs_path = upload_file_to_gcs(
-                            str(result_file),
+                        structured_json_path = upload_json_to_gcs(
+                            structured_result,
                             output_bucket,
                             json_output_path
                         )
-                        contract_json_path = json_gcs_path
-                        logger.info(f"✅ Contract JSON saved to: {json_gcs_path}")
+                        logger.info(f"✅ Structured contract JSON saved to: {structured_json_path}")
+                        break
                     else:
-                        # その他のファイルをocr_resultsに保存
-                        output_prefix = f"{workspace_id}/{project_id}/ocr_results/"
-                        gcs_path = upload_file_to_gcs(
-                            str(result_file),
-                            output_bucket,
-                            output_prefix + result_file.name
-                        )
-                        output_files.append(gcs_path)
-                        logger.info(f"✅ Result file uploaded to: {gcs_path}")
-        
-        # フォールバック：契約書JSONが見つからない場合
-        if not contract_json_path:
-            logger.warning(f"⚠️ 契約書JSONが見つかりませんでした。デフォルトJSONを作成します。")
-            default_json = {
-                "success": True,
-                "info": {
-                    "title": basename,
-                    "party": "",
-                    "start_date": "",
-                    "end_date": "",
-                    "conclusion_date": ""
-                },
-                "result": {
-                    "articles": []
-                },
-                "note": "main_pipeline.py実行完了。詳細な結果は他のファイルを参照してください。"
-            }
-            
-            json_output_path = f"{workspace_id}/{project_id}/after_ocr/{basename}.json"
-            contract_json_path = upload_json_to_gcs(
-                default_json,
-                output_bucket,
-                json_output_path
-            )
-            logger.info(f"✅ Default contract JSON saved to: {contract_json_path}")
+                        logger.warning(f"⚠️ Gemini structured output returned None for: {output_file}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to structure contract data for {output_file}: {str(e)}")
+                    logger.error(f"❌ Stack trace: {traceback.format_exc()}")
+                    continue
+            else:
+                logger.info(f"⏭️ Skipping non-integrated file: {output_file}")
         
         return {
             'success': True,
-            'contract_json': contract_json_path,
             'output_files': output_files,
+            'structured_json': structured_json_path,
             'pipeline_result': pipeline_result
         }
         
@@ -663,6 +660,156 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             'success': False,
             'error': str(e)
         }
+
+def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Dict[str, Any]]:
+    """
+    GCSに保存されたテキストファイルをGeminiの構造化出力を使って契約書スキーマに変換
+    
+    Args:
+        gcs_file_path: GCSのファイルパス
+        basename: ファイルのベース名
+    
+    Returns:
+        構造化された契約書データまたはNone
+    """
+    try:
+        # Gemini APIの設定
+        genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+        
+        # 契約書スキーマの定義
+        contract_schema = {
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "info": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "party": {"type": "string"},  # カンマ区切りの当事者名
+                        "start_date": {"type": "string"},  # 空文字列で対応
+                        "end_date": {"type": "string"},  # 空文字列で対応
+                        "conclusion_date": {"type": "string"}  # 空文字列で対応
+                    },
+                    "required": ["title", "party"]
+                },
+                "result": {
+                    "type": "object",
+                    "properties": {
+                        "articles": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "article_number": {"type": "string"},  # "第1条" または "署名欄"
+                                    "title": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "table_number": {"type": "string"}  # 表の場合のみ
+                                },
+                                "required": ["content", "title"]  # titleも必須にする
+                            }
+                        }
+                    },
+                    "required": ["articles"]
+                }
+            },
+            "required": ["success", "info", "result"]
+        }
+        
+        # GCSからファイル内容を読み取り
+        file_content = download_text_from_gcs(gcs_file_path)
+        if not file_content:
+            logger.warning(f"Could not read content from: {gcs_file_path}")
+            return None
+        
+        # Geminiモデルの初期化（構造化出力対応）
+        model = genai.GenerativeModel(
+            'gemini-1.5-pro',
+            generation_config={
+                "response_mime_type": "application/json",
+                "response_schema": contract_schema
+            }
+        )
+        
+        # プロンプトの作成
+        prompt = f"""
+以下のOCR処理済みテキストを解析し、契約書の構造化データとして抽出してください。
+
+ファイル名: {basename}
+
+テキスト内容:
+{file_content}
+
+抽出指示:
+1. success: 常にtrue
+2. info部分:
+   - title: 契約書のタイトル（見つからない場合はファイル名を使用）
+   - party: 契約当事者をカンマ区切りで記載（例: "株式会社A,株式会社B"）
+   - start_date: 契約開始日（YYYY-MM-DD形式、見つからない場合は空文字列）
+   - end_date: 契約終了日（YYYY-MM-DD形式、見つからない場合は空文字列）
+   - conclusion_date: 契約締結日（YYYY-MM-DD形式、見つからない場合は空文字列）
+
+3. result部分:
+   - articles: 契約条項の配列
+     - article_number: 条項番号（例: "第1条"、"署名欄"等）
+     - title: 条項のタイトル
+     - content: 条項の内容
+     - table_number: 表がある場合のみ表番号
+
+注意事項:
+- 日付は可能な限りYYYY-MM-DD形式に変換してください
+- 表や図がある場合は適切に説明を含めてください
+- 署名欄も1つの条項として扱ってください
+"""
+        
+        # Geminiに送信して構造化出力を取得
+        response = model.generate_content(prompt)
+        
+        # JSONとしてパース
+        structured_data = json.loads(response.text)
+        
+        logger.info(f"Successfully structured contract data with {len(structured_data.get('result', {}).get('articles', []))} articles")
+        
+        return structured_data
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini structured output: {str(e)}")
+        return None
+
+
+def download_text_from_gcs(gcs_path: str) -> Optional[str]:
+    """
+    GCSからテキストファイルの内容を読み取り
+    
+    Args:
+        gcs_path: GCSのファイルパス (gs://bucket/path/to/file.txt)
+    
+    Returns:
+        ファイル内容またはNone
+    """
+    try:
+        from google.cloud import storage
+        
+        # GCS URIをパース
+        if not gcs_path.startswith('gs://'):
+            return None
+            
+        path_parts = gcs_path.replace('gs://', '').split('/', 1)
+        bucket_name = path_parts[0]
+        blob_name = path_parts[1]
+        
+        # GCSクライアントでファイルを読み取り
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        
+        # テキストとして読み取り
+        content = blob.download_as_text(encoding='utf-8')
+        
+        return content
+        
+    except Exception as e:
+        logger.error(f"Error downloading text from GCS: {str(e)}")
+        return None
 
 def download_from_gcs(gcs_uri: str, local_path: str) -> str:
     """

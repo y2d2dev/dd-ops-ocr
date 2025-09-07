@@ -81,10 +81,17 @@ class DocumentAIOCREngine:
         try:
             from google.cloud import documentai
             from google.api_core.client_options import ClientOptions
+            from google.auth import default
+            
+            # Cloud Runのデフォルト認証を明示的に使用
+            credentials, project = default()
             
             # クライアント設定
             opts = ClientOptions(api_endpoint=f"{self.location}-documentai.googleapis.com")
-            client = documentai.DocumentProcessorServiceClient(client_options=opts)
+            client = documentai.DocumentProcessorServiceClient(
+                client_options=opts,
+                credentials=credentials
+            )
             
             # プロセッサー名を構築
             name = client.processor_path(self.project_id, self.location, self.processor_id)
