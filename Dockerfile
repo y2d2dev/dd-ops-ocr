@@ -10,10 +10,11 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender1 \
     libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# 必要なPythonパッケージをインストール
-RUN pip install --no-cache-dir \
+# 必要なPythonパッケージをインストール（メモリ効率を考慮）
+RUN pip install --no-cache-dir --compile \
     pyyaml \
     python-dotenv \
     PyMuPDF \
@@ -22,13 +23,34 @@ RUN pip install --no-cache-dir \
     numpy \
     google-generativeai \
     google-cloud-documentai \
-    ultralytics
+    flask \
+    gunicorn \
+    google-cloud-storage \
+    && pip cache purge
+
+# ultralytics は重いので条件付きでインストール（環境変数で制御）
+ARG INSTALL_ULTRALYTICS=false
+RUN if [ "$INSTALL_ULTRALYTICS" = "true" ] ; then pip install --no-cache-dir ultralytics ; fi
 
 # プロジェクトファイルをコピー
 COPY . /app/
 
+# 書き込み可能ディレクトリを作成
+RUN mkdir -p /tmp/pdf /tmp/result /tmp/data/models
+
 # 環境変数設定
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
 
-CMD ["bash"]
+# Cloud Run用：メモリ効率を重視したGunicorn設定
+CMD exec gunicorn --bind :$PORT \
+    --workers 1 \
+    --threads 2 \
+    --worker-class sync \
+    --max-requests 100 \
+    --max-requests-jitter 10 \
+    --preload \
+    --timeout 540 \
+    --worker-tmp-dir /dev/shm \
+    src.api.main:app

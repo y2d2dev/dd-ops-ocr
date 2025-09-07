@@ -13,7 +13,8 @@ class ModelDownloader:
     def __init__(self, bucket_name: str = "dd_ops_models"):
         self.bucket_name = bucket_name
         self.storage_client = None
-        self.models_dir = Path("/app/data/models")
+        # Cloud Run対応：書き込み可能ディレクトリを使用
+        self.models_dir = Path("/tmp/data/models")
         
     def _get_storage_client(self):
         """Storage clientの遅延初期化"""
