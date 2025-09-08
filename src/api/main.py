@@ -723,7 +723,7 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
         
         # Geminiモデルの初期化（構造化出力対応）
         model = genai.GenerativeModel(
-            'gemini-1.5-pro',
+            'gemini-2.5-pro',
             generation_config={
                 "response_mime_type": "application/json",
                 "response_schema": contract_schema
@@ -749,16 +749,20 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
    - conclusion_date: 契約締結日（YYYY-MM-DD形式、見つからない場合は空文字列）
 
 3. result部分:
-   - articles: 契約条項の配列
-     - article_number: 条項番号（例: "第1条"、"署名欄"等）
-     - title: 条項のタイトル
-     - content: 条項の内容
+   - articles: 契約条項の配列（全ての条項を漏れなく抽出）
+     - article_number: 条項番号（例: "第1条"、"第2条"、番号がない場合は"署名欄"等）
+     - title: 条項のタイトル（見出しがない場合は内容から要約）
+     - content: 条項の完全な内容（省略禁止）
      - table_number: 表がある場合のみ表番号
 
-注意事項:
+重要な注意事項:
+- テキスト内の全ての条項を必ず抽出してください（第1条から最後まで）
+- 各条項のcontentは完全にコピーし、省略や要約は行わないでください
+- 条項番号が明記されていない部分（前文、署名欄、付記等）も独立した条項として扱ってください
 - 日付は可能な限りYYYY-MM-DD形式に変換してください
-- 表や図がある場合は適切に説明を含めてください
-- 署名欄も1つの条項として扱ってください
+- 表や図がある場合はHTML形式でcontentに含めてください
+- 署名欄も必ず1つの条項として扱ってください
+- 出力は必ず完全なJSON形式で、途中で切れることなく最後まで出力してください
 """
         
         # Geminiに送信して構造化出力を取得
