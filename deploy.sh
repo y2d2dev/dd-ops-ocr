@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# Cloud Run デプロイスクリプト (512MB最適化版)
+# Cloud Run デプロイスクリプト (README.md準拠版)
 
 # 設定
 PROJECT_ID="reflected-flux-462908-s6"
-SERVICE_NAME="dd-ops-ocr-api"
+SERVICE_NAME="dd-ops-ocr-api-v2"
 REGION="asia-northeast1"  # 東京リージョン
-IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
+IMAGE_NAME="gcr.io/$PROJECT_ID/dd-ops-ocr-api"
 
-echo "🚀 Cloud Run デプロイを開始します (512MB構成)..."
+echo "🚀 Cloud Run デプロイを開始します..."
 
-# 1. 軽量Dockerイメージをビルド
-echo "📦 軽量Dockerイメージをビルド中..."
-docker build -t $IMAGE_NAME \
+# 1. Dockerイメージをビルド（linux/amd64プラットフォーム指定）
+echo "📦 Dockerイメージをビルド中 (linux/amd64)..."
+docker build --platform linux/amd64 -t $IMAGE_NAME \
   --build-arg INSTALL_ULTRALYTICS=false \
   .
 
@@ -20,26 +20,13 @@ docker build -t $IMAGE_NAME \
 echo "⬆️  Container Registryにプッシュ中..."
 docker push $IMAGE_NAME
 
-# 3. Cloud Runにデプロイ (512MB設定)
-echo "🌐 Cloud Runにデプロイ中 (512MB構成)..."
-gcloud run deploy $SERVICE_NAME \
-  --image $IMAGE_NAME \
-  --platform managed \
+# 3. Cloud Runサービスを作成/更新
+echo "🌐 Cloud Runにデプロイ中..."
+gcloud run services update $SERVICE_NAME \
   --region $REGION \
-  --allow-unauthenticated \
-  --memory 512Mi \
-  --cpu 1 \
-  --timeout 540 \
-  --concurrency 5 \
-  --max-instances 5 \
-  --min-instances 0 \
-  --cpu-throttling \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID" \
-  --set-env-vars "GCS_BUCKET_NAME=app_contracts_staging" \
-  --set-env-vars "DD_OPS_MODELS_BUCKET=dd_ops_models" \
-  --set-env-vars "PYTHONDONTWRITEBYTECODE=1" \
-  --set-env-vars "PYTHONUNBUFFERED=1"
+  --image $IMAGE_NAME \
+  --memory 1Gi \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCS_BUCKET_NAME=app_contracts_staging,DD_OPS_MODELS_BUCKET=dd_ops_models,PYTHONDONTWRITEBYTECODE=1,PYTHONUNBUFFERED=1,GEMINI_API_KEY=AIzaSyCCZL0v2FOVqYbWhshAeyETCj0zE3_5m1s,DOCUMENT_AI_PROJECT_ID=75499681521,DOCUMENT_AI_PROCESSOR_ID=599b6ebb19fa1478,DOCUMENT_AI_LOCATION=us"
 
 echo "✅ デプロイ完了！"
-echo "🔗 サービスURL: https://$SERVICE_NAME-$REGION-$PROJECT_ID.run.app"
-echo "💡 512MB構成でデプロイしました。重い処理の場合はタイムアウトする可能性があります。"
+echo "🔗 サービスURL: https://$SERVICE_NAME-$REGION.run.app"
