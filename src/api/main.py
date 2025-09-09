@@ -726,7 +726,8 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
             'gemini-2.5-pro',
             generation_config={
                 "response_mime_type": "application/json",
-                "response_schema": contract_schema
+                "response_schema": contract_schema,
+                "max_output_tokens": 32768  # 最大出力トークン数を設定
             }
         )
         

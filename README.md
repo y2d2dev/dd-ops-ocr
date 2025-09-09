@@ -42,14 +42,16 @@ docker push gcr.io/reflected-flux-462908-s6/dd-ops-ocr-api
 gcloud run services update dd-ops-ocr-api-v2 \
   --region asia-northeast1 \
   --image gcr.io/reflected-flux-462908-s6/dd-ops-ocr-api \
-  --memory 1Gi \
+  --memory 2Gi \
+  --timeout 3600 \
   --set-env-vars "GOOGLE_CLOUD_PROJECT=reflected-flux-462908-s6,GCS_BUCKET_NAME=app_contracts_staging,DD_OPS_MODELS_BUCKET=dd_ops_models,PYTHONDONTWRITEBYTECODE=1,PYTHONUNBUFFERED=1,GEMINI_API_KEY=AIzaSyCCZL0v2FOVqYbWhshAeyETCj0zE3_5m1s,DOCUMENT_AI_PROJECT_ID=75499681521,DOCUMENT_AI_PROCESSOR_ID=599b6ebb19fa1478,DOCUMENT_AI_LOCATION=us"
 ```
 
 ### 重要な設定ポイント
 
 - **プラットフォーム指定**: `--platform linux/amd64`（ARM64マシンからデプロイする場合）
-- **メモリ**: `1Gi`（512Miでは不足）
+- **メモリ**: `2Gi`（OCR処理でメモリ使用量が多いため。1Giでは不足）
+- **タイムアウト**: `3600`秒（1時間、OCR処理の完了を待つため最長設定）
 - **必須環境変数**:
   - `GEMINI_API_KEY`: Gemini API認証用
   - `DOCUMENT_AI_*`: Document AI設定
@@ -57,6 +59,37 @@ gcloud run services update dd-ops-ocr-api-v2 \
 
 ### 現在のサービスURL
 https://dd-ops-ocr-api-v2-75499681521.asia-northeast1.run.app
+
+## PubSub連携設定
+
+### Cloud Pub/Sub経由での自動OCR処理
+Cloud StorageへのPDFアップロードを自動検知してOCR処理を実行するための設定です。
+
+#### 1. エンドポイント
+- **PubSub Push エンドポイント**: `/pubsub/push`
+- Cloud Storage Object Notificationからのメッセージを受信
+
+#### 2. 必要な権限設定（重要）
+PubSubサービスアカウントがCloud Runサービスを呼び出せるように権限を付与する必要があります：
+
+```bash
+# プロジェクト番号を取得
+gcloud projects describe reflected-flux-462908-s6 --format="value(projectNumber)"
+# 結果: 75499681521
+
+# PubSubサービスアカウントにCloud Run Invoker権限を付与
+gcloud run services add-iam-policy-binding dd-ops-ocr-api-v2 \
+  --region asia-northeast1 \
+  --member="serviceAccount:service-75499681521@gcp-sa-pubsub.iam.gserviceaccount.com" \
+  --role="roles/run.invoker"
+```
+
+#### 3. 設定済みの権限
+- **サービスアカウント**: `service-75499681521@gcp-sa-pubsub.iam.gserviceaccount.com`
+- **付与した権限**: `roles/run.invoker`
+- **設定日**: 2025年9月9日
+
+この設定により、PubSubからのリクエストが認証エラーなくCloud Runサービスに到達できます。
 
 ## 開発者向け情報
 
