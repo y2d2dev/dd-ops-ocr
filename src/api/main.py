@@ -8,6 +8,7 @@ from datetime import datetime
 import traceback
 from typing import Dict, Any, Optional
 import google.generativeai as genai
+from google.cloud import storage
 import subprocess
 import sys
 from pathlib import Path
@@ -594,17 +595,51 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
         result_dir = project_root / "result"
         if not result_dir.exists():
             result_dir = Path("/tmp/result")
+
+        # 重要: Cloud Runでは毎回新しいインスタンスが起動されるはずだが、
+        # Dockerイメージに古いresultファイルが含まれている可能性があるため、
+        # 処理開始前に必ずresultディレクトリをクリーンアップ
+        if result_dir.exists():
+            logger.info(f"🧹 Cleaning up result directory: {result_dir}")
+            for old_file in result_dir.glob("*"):
+                if old_file.is_file():
+                    try:
+                        old_file.unlink()
+                        logger.info(f"🗑️ Deleted old file: {old_file.name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete old file {old_file.name}: {e}")
+
         output_files = []
         
+        txt_files_to_delete = []  # 削除予定のtxtファイルを追跡
+
         if result_dir.exists():
             # 最新のファイルを検索（タイムスタンプ付きファイル）
+            # 重要: 現在のセッションのファイルのみを処理する
             for result_file in result_dir.glob("*"):
                 if result_file.is_file():
+                    # 古いファイルや他のPDFのファイルはスキップ
+                    file_timestamp = result_file.stem.split('_')[-1] if '_' in result_file.stem else ''
+                    if file_timestamp and len(file_timestamp) == 6:  # HHMMSS format
+                        # 1時間以上前のファイルはスキップ
+                        continue
+
+                    # ファイル名に現在のPDFのbasenameが含まれているかチェック
+                    if basename not in result_file.name:
+                        logger.info(f"⏭️ Skipping file from different PDF: {result_file.name}")
+                        continue
                     # 契約書メタデータJSONは保存しない
                     if result_file.suffix == '.json' and 'integration_metadata' in result_file.name:
                         logger.info(f"🚫 Skipping contract metadata JSON: {result_file.name}")
                         continue
-                    
+
+                    # txtファイルは構造化処理で使用し、その後削除
+                    if result_file.suffix == '.txt':
+                        logger.info(f"📝 Found txt file for local processing: {result_file.name}")
+                        txt_files_to_delete.append(result_file)
+                        # GCSにはアップロードせず、ローカルで処理
+                        continue
+
                     # その他のファイルをocr_resultsに保存
                     output_prefix = f"{workspace_id}/{project_id}/ocr_results/"
                     gcs_path = upload_file_to_gcs(
@@ -614,19 +649,22 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
                     )
                     output_files.append(gcs_path)
                     logger.info(f"✅ Result file uploaded to: {gcs_path}")
-        
-        # 統合されたファイルを探してGeminiで構造化
+
+        # ローカルのtxtファイルを使用してGeminiで構造化
         structured_json_path = None
-        logger.info(f"🔍 Looking for integrated files to structure. Found {len(output_files)} files: {output_files}")
-        for output_file in output_files:
-            logger.info(f"🔍 Checking file: {output_file}")
-            # 統合されたファイル（通常は最大のテキストファイル）を特定
-            if 'integrated' in output_file or output_file.endswith('.txt'):
-                logger.info(f"🎯 Found integrated file for structuring: {output_file}")
+        logger.info(f"🔍 Looking for local txt files to structure. Found {len(txt_files_to_delete)} txt files")
+        for txt_file in txt_files_to_delete:
+            # 統合されたファイル（integratedを含む）を特定
+            if 'integrated' in txt_file.name:
+                logger.info(f"🎯 Found integrated file for structuring: {txt_file.name}")
                 try:
-                    logger.info(f"🧠 Starting Gemini structured output for: {output_file}")
-                    # Geminiの構造化出力を使用
-                    structured_result = convert_to_contract_schema(output_file, basename)
+                    logger.info(f"🧠 Starting Gemini structured output for local file: {txt_file.name}")
+                    # ローカルファイルから直接テキストを読み込み
+                    with open(txt_file, 'r', encoding='utf-8') as f:
+                        file_content = f.read()
+
+                    # Geminiの構造化出力を使用（ローカルファイル版）
+                    structured_result = convert_local_text_to_contract_schema(file_content, basename)
                     if structured_result:
                         # 構造化されたJSONをafter_ocrに保存
                         json_output_path = f"{workspace_id}/{project_id}/after_ocr/{basename}.json"
@@ -638,13 +676,21 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
                         logger.info(f"✅ Structured contract JSON saved to: {structured_json_path}")
                         break
                     else:
-                        logger.warning(f"⚠️ Gemini structured output returned None for: {output_file}")
+                        logger.warning(f"⚠️ Gemini structured output returned None for: {txt_file.name}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to structure contract data for {output_file}: {str(e)}")
+                    logger.error(f"❌ Failed to structure contract data for {txt_file.name}: {str(e)}")
                     logger.error(f"❌ Stack trace: {traceback.format_exc()}")
                     continue
-            else:
-                logger.info(f"⏭️ Skipping non-integrated file: {output_file}")
+
+        # 構造化処理が完了したら、ローカルのtxtファイルを削除
+        for txt_file in txt_files_to_delete:
+            try:
+                txt_file.unlink()
+                logger.info(f"🗑️ Deleted local txt file: {txt_file.name}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to delete txt file {txt_file.name}: {e}")
+
+        # GCS上にtxtファイルはアップロードしていないため、削除処理は不要
         
         return {
             'success': True,
@@ -661,14 +707,132 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             'error': str(e)
         }
 
+def convert_local_text_to_contract_schema(file_content: str, basename: str) -> Optional[Dict[str, Any]]:
+    """
+    ローカルのテキストをGeminiの構造化出力を使って契約書スキーマに変換
+
+    Args:
+        file_content: テキスト内容
+        basename: ファイルのベース名
+
+    Returns:
+        構造化された契約書データまたはNone
+    """
+    try:
+        # Gemini APIの設定
+        genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+
+        # 契約書スキーマの定義
+        contract_schema = {
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "info": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "party": {"type": "string"},  # カンマ区切りの当事者名
+                        "start_date": {"type": "string"},  # 空文字列で対応
+                        "end_date": {"type": "string"},  # 空文字列で対応
+                        "conclusion_date": {"type": "string"}  # 空文字列で対応
+                    },
+                    "required": ["title", "party"]
+                },
+                "result": {
+                    "type": "object",
+                    "properties": {
+                        "articles": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "article_number": {"type": "string"},  # "第1条" または "署名欄"
+                                    "title": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "table_number": {"type": "string"}  # 表の場合のみ
+                                },
+                                "required": ["content", "title"]  # titleも必須にする
+                            }
+                        }
+                    },
+                    "required": ["articles"]
+                }
+            },
+            "required": ["success", "info", "result"]
+        }
+
+        if not file_content:
+            logger.warning(f"Empty content provided")
+            return None
+
+        # Geminiモデルの初期化（構造化出力対応）
+        model = genai.GenerativeModel(
+            'gemini-2.5-pro',
+            generation_config={
+                "response_mime_type": "application/json",
+                "response_schema": contract_schema,
+                "max_output_tokens": 32768  # 最大出力トークン数を設定
+            }
+        )
+
+        # プロンプトの作成
+        prompt = f"""
+以下のOCR処理済みテキストを解析し、契約書の構造化データとして抽出してください。
+
+ファイル名: {basename}
+
+テキスト内容:
+{file_content}
+
+抽出指示:
+1. success: 常にtrue
+2. info部分:
+   - title: 契約書のタイトル（見つからない場合はファイル名を使用）
+   - party: 契約当事者をカンマ区切りで記載（例: "株式会社A,株式会社B"）
+   - start_date: 契約開始日（YYYY-MM-DD形式、見つからない場合は空文字列）
+   - end_date: 契約終了日（YYYY-MM-DD形式、見つからない場合は空文字列）
+   - conclusion_date: 契約締結日（YYYY-MM-DD形式、見つからない場合は空文字列）
+
+3. result部分:
+   - articles: 契約条項の配列（全ての条項を漏れなく抽出）
+     - article_number: 条項番号（例: "第1条"、"第2条"、番号がない場合は"署名欄"等）
+     - title: 条項のタイトル（見出しがない場合は内容から要約）
+     - content: 条項の完全な内容（省略禁止）
+     - table_number: 表がある場合のみ表番号
+
+重要な注意事項:
+- テキスト内の全ての条項を必ず抽出してください（第1条から最後まで）
+- 各条項のcontentは完全にコピーし、省略や要約は行わないでください
+- 条項番号が明記されていない部分（前文、署名欄、付記等）も独立した条項として扱ってください
+- 日付は可能な限りYYYY-MM-DD形式に変換してください
+- 表や図がある場合はHTML形式でcontentに含めてください
+- 署名欄も必ず1つの条項として扱ってください
+- 出力は必ず完全なJSON形式で、途中で切れることなく最後まで出力してください
+"""
+
+        # Geminiに送信して構造化出力を取得
+        response = model.generate_content(prompt)
+
+        # JSONとしてパース
+        structured_data = json.loads(response.text)
+
+        logger.info(f"Successfully structured contract data with {len(structured_data.get('result', {}).get('articles', []))} articles")
+
+        return structured_data
+
+    except Exception as e:
+        logger.error(f"Error in Gemini structured output: {str(e)}")
+        return None
+
+
 def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Dict[str, Any]]:
     """
     GCSに保存されたテキストファイルをGeminiの構造化出力を使って契約書スキーマに変換
-    
+
     Args:
         gcs_file_path: GCSのファイルパス
         basename: ファイルのベース名
-    
+
     Returns:
         構造化された契約書データまたはNone
     """

@@ -70,5 +70,8 @@ class DirectoryManager:
             ensure_directory(dir_path)
             session_dirs[dir_name] = dir_path
             logger.debug(f"セッションディレクトリ作成: {dir_name} -> {dir_path}")
-        
+
+        # session_id自体も辞書に追加（Step7等で使用）
+        session_dirs["session_id"] = session_id
+
         return session_dirs
