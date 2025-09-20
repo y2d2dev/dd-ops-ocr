@@ -1,29 +1,30 @@
 import os
 import json
 from datetime import datetime
-import google.generativeai as genai
+import vertexai
+from vertexai.generative_models import GenerativeModel
 from dotenv import load_dotenv
 load_dotenv()
 
 
 class OCRTextCleaner:
-    def __init__(self, api_key=None):
+    def __init__(self, project_id=None, location=None):
         """
         OCRテキストクリーナーの初期化
 
         Args:
-            api_key (str): Gemini API キー。Noneの場合は環境変数から取得
+            project_id (str): GCPプロジェクトID。Noneの場合は環境変数から取得
+            location (str): Vertex AIのロケーション
         """
-        if api_key:
-            genai.configure(api_key=api_key)
-        else:
-            # 環境変数からAPIキーを取得
-            api_key = os.getenv('GEMINI_API_KEY')
-            if not api_key:
-                raise ValueError("GEMINI_API_KEY environment variable not set")
-            genai.configure(api_key=api_key)
+        self.project_id = project_id or os.getenv('GCP_PROJECT_ID')
+        self.location = location or os.getenv('GCP_LOCATION', 'us-central1')
 
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        if not self.project_id:
+            raise ValueError("GCP_PROJECT_ID environment variable not set")
+
+        # Vertex AI初期化
+        vertexai.init(project=self.project_id, location=self.location)
+        self.model = GenerativeModel('gemini-2.5-flash')
 
     @staticmethod
     def find_common_filename_part(file1_path, file2_path):
@@ -134,7 +135,7 @@ OCRテキスト2:
             response = self.model.generate_content(prompt)
             return response.text
         except Exception as e:
-            print(f"Gemini API呼び出しでエラーが発生しました: {e}")
+            print(f"Vertex AI API呼び出しでエラーが発生しました: {e}")
             # フォールバック：単純な結合
             return f"{text1}\n\n--- テキスト2 ---\n\n{text2}"
 
@@ -219,7 +220,7 @@ OCRテキスト2:
         print(f"ファイル2を読み込み中: {file2_path}")
         text2 = self.read_txt_file(file2_path)
 
-        print("Gemini APIでテキストをクリーンアップ中...")
+        print("Vertex AIでテキストをクリーンアップ中...")
         cleaned_text = self.clean_and_merge_texts(text1, text2)
 
         # 出力ファイル名を生成
@@ -279,12 +280,13 @@ def main():
     parser.add_argument('file1', help='1つ目のOCRテキストファイル')
     parser.add_argument('file2', help='2つ目のOCRテキストファイル')
     parser.add_argument('-o', '--output', help='出力ファイルパス')
-    parser.add_argument('--api-key', help='Gemini API キー')
+    parser.add_argument('--project-id', help='GCP プロジェクトID')
+    parser.add_argument('--location', help='Vertex AI ロケーション', default='us-central1')
 
     args = parser.parse_args()
 
     try:
-        cleaner = OCRTextCleaner(api_key=args.api_key)
+        cleaner = OCRTextCleaner(project_id=args.project_id, location=args.location)
         output_path = cleaner.process_files(
             args.file1, args.file2, args.output)
         print(f"処理完了: {output_path}")

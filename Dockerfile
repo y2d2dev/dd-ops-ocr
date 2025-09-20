@@ -20,9 +20,10 @@ RUN pip install --no-cache-dir \
     Pillow \
     opencv-python-headless \
     numpy \
-    google-generativeai \
+    google-cloud-aiplatform \
     google-cloud-documentai \
-    ultralytics
+    ultralytics \
+    vertexai
 
 # プロジェクトファイルをコピー
 COPY . /app/
