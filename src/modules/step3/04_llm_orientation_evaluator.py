@@ -28,10 +28,11 @@ class LLMOrientationEvaluator:
         self.temperature = self.config.get('temperature', 0.1)
         self.max_output_tokens = self.config.get('max_output_tokens', 32768)
         
-        # Gemini API初期化
-        self.api_key = os.getenv('GEMINI_API_KEY')
-        if not self.api_key:
-            logger.warning("GEMINI_API_KEY環境変数が設定されていません")
+        # Vertex AI初期化用の環境変数チェック
+        self.project_id = os.getenv('GCP_PROJECT_ID')
+        self.location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not self.project_id:
+            logger.warning("GCP_PROJECT_ID環境変数が設定されていません")
         
         logger.debug(f"LLMOrientationEvaluator初期化: {self.provider}/{self.model}")
     
@@ -52,57 +53,58 @@ class LLMOrientationEvaluator:
             logger.error(f"画像エンコードエラー: {e}")
             return None
     
-    async def _call_gemini_api(self, image_base64: str, prompts: Dict) -> Dict:
+    async def _call_vertex_ai_api(self, image_path: str, prompts: Dict) -> Dict:
         """
-        Gemini APIを呼び出して方向判定を実行
-        
+        Vertex AIを呼び出して方向判定を実行
+
         Args:
-            image_base64 (str): Base64エンコードされた画像
+            image_path (str): 画像ファイルパス
             prompts (Dict): プロンプト設定
-            
+
         Returns:
             Dict: API応答結果
         """
         try:
-            import google.generativeai as genai
-            
-            # Gemini API設定
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(self.model)
-            
+            import vertexai
+            from vertexai.generative_models import GenerativeModel, GenerationConfig, Image
+
+            # Vertex AI初期化
+            vertexai.init(project=self.project_id, location=self.location)
+            model = GenerativeModel(self.model)
+
             # プロンプト作成
             system_prompt = prompts.get('system_prompt', '')
             user_prompt = prompts.get('user_prompt', '')
-            
-            # 画像をGenAI形式に変換
-            import io
-            from PIL import Image
-            image_data = base64.b64decode(image_base64)
-            image = Image.open(io.BytesIO(image_data))
-            
+
+            # 画像読み込み
+            image = Image.load_from_file(image_path)
+
+            # 生成設定
+            generation_config = GenerationConfig(
+                temperature=self.temperature,
+                max_output_tokens=self.max_output_tokens
+            )
+
             # API呼び出し（非同期対応）
             import asyncio
-            
-            # Gemini APIの呼び出しを非同期で実行
+
+            # Vertex AIの呼び出しを非同期で実行
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: model.generate_content([
                     system_prompt + "\n\n" + user_prompt,
                     image
-                ], generation_config=genai.types.GenerationConfig(
-                    temperature=self.temperature,
-                    max_output_tokens=self.max_output_tokens
-                ))
+                ], generation_config=generation_config)
             )
-            
+
             return {
                 "success": True,
                 "response_text": response.text,
                 "model": self.model
             }
-            
+
         except Exception as e:
-            logger.error(f"Gemini API呼び出しエラー: {e}")
+            logger.error(f"Vertex AI API呼び出しエラー: {e}")
             return {
                 "success": False,
                 "error": str(e)
@@ -180,28 +182,20 @@ class LLMOrientationEvaluator:
                     "error": f"画像ファイルが見つかりません: {image_path}"
                 }
             
-            # API Key確認
-            if not self.api_key:
+            # Project ID確認
+            if not self.project_id:
                 return {
                     "success": False,
-                    "error": "GEMINI_API_KEY環境変数が設定されていません"
+                    "error": "GCP_PROJECT_ID環境変数が設定されていません"
                 }
-            
-            # 画像をBase64エンコード
-            image_base64 = self._encode_image_to_base64(image_path)
-            if not image_base64:
-                return {
-                    "success": False,
-                    "error": "画像のエンコードに失敗しました"
-                }
-            
+
             # リトライ処理
             last_error = None
             for attempt in range(self.max_retries):
                 logger.debug(f"LLM API呼び出し試行 {attempt + 1}/{self.max_retries}")
-                
+
                 # API呼び出し（非同期）
-                api_result = await self._call_gemini_api(image_base64, prompts)
+                api_result = await self._call_vertex_ai_api(image_path, prompts)
                 
                 if api_result.get("success"):
                     # 応答解析

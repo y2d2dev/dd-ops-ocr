@@ -10,19 +10,22 @@ docker build -t y2d2-pipeline .
 
 ### 2. 開発モード（コード変更してもビルド不要）
 ```bash
-# pdf/ディレクトリのPDFを自動処理
-docker run --rm -v $(pwd):/app y2d2-pipeline python src/main_pipeline.py
+# pdf/ディレクトリのPDFを自動処理（GCP認証付き）
+docker run --rm -v $(pwd):/app -v ~/.config/gcloud:/root/.config/gcloud:ro -e GCP_PROJECT_ID=reflected-flux-462908-s6 -e GCP_LOCATION=us-central1 y2d2-pipeline python src/main_pipeline.py
 
-# 指定したPDFを処理
-docker run --rm -v $(pwd):/app y2d2-pipeline python src/main_pipeline.py --input pdf/your_file.pdf
+# 指定したPDFを処理（GCP認証付き）
+docker run --rm -v $(pwd):/app -v ~/.config/gcloud:/root/.config/gcloud:ro -e GCP_PROJECT_ID=reflected-flux-462908-s6 -e GCP_LOCATION=us-central1 y2d2-pipeline python src/main_pipeline.py --input pdf/test.pdf
 ```
 
 ### 3. 対話モード（開発・デバッグ用）
 ```bash
-docker run -it --rm -v $(pwd):/app y2d2-pipeline bash
+# GCP認証付きでコンテナに入る
+docker run -it --rm -v $(pwd):/app -v ~/.config/gcloud:/root/.config/gcloud:ro -e GCP_PROJECT_ID=reflected-flux-462908-s6 -e GCP_LOCATION=us-central1 y2d2-pipeline bash
+
 # コンテナ内で自由に実行:
 # python src/main_pipeline.py
 # python src/main_pipeline.py --input pdf/test.pdf
+# python test_vertex_ai.py
 ```
 
 **📝 重要：** `-v $(pwd):/app` でローカルコードをマウントするため、**コード変更時にビルド不要**です。
@@ -90,16 +93,55 @@ gcloud run services add-iam-policy-binding dd-ops-ocr-api-v2 \
 - **設定日**: 2025年9月9日
 
 この設定により、PubSubからのリクエストが認証エラーなくCloud Runサービスに到達できます。
+## Vertex AI統合テスト
+
+このプロジェクトはVertex AIを使用しています。ローカルでのテスト方法：
+
+### 1. 基本テスト（認証なし）
+```bash
+# Dockerイメージをビルド
+docker build -t y2d2-vertex-test .
+
+# 基本動作テスト（ライブラリインポート、モジュール初期化）
+docker run --rm y2d2-vertex-test python test_vertex_ai.py
+```
+
+### 2. フル機能テスト（環境変数あり）
+```bash
+# 環境変数を設定してテスト
+docker run --rm \
+  -e GCP_PROJECT_ID=your-project-id \
+  -e GCP_LOCATION=us-central1 \
+  y2d2-vertex-test python test_vertex_ai.py
+```
+
+### 3. 実際のVertex AI機能テスト
+```bash
+# GCP認証設定済みの場合（Vertex AI統合テスト）
+docker run --rm \
+  -v $(pwd):/app \
+  -v ~/.config/gcloud:/root/.config/gcloud:ro \
+  -e GCP_PROJECT_ID=reflected-flux-462908-s6 \
+  -e GCP_LOCATION=us-central1 \
+  y2d2-pipeline python test_vertex_ai.py
+
+# 実際のパイプライン実行テストーこれでローカルでもテストできる
+docker run --rm \
+  -v $(pwd):/app \
+  -v ~/.config/gcloud:/root/.config/gcloud:ro \
+  -e GCP_PROJECT_ID=reflected-flux-462908-s6 \
+  -e GCP_LOCATION=us-central1 \
+  y2d2-pipeline python src/main_pipeline.py --input pdf/test.pdf
+```
+
+**📝 重要：**
+- `GCP_PROJECT_ID`: 使用するGCPプロジェクトID
+- `GCP_LOCATION`: Vertex AIのリージョン（デフォルト: us-central1）
+- 実際のAPI呼び出しにはGCP認証が必要です
 
 ## 開発者向け情報
 
 詳細な開発ルール・ログフォーマット・トラブルシューティングについては [DEVELOPMENT.md](./DEVELOPMENT.md) を参照してください。
-
-
-
-
-
-
 
 
 書類OCR前処理の統合パイプラインシステム

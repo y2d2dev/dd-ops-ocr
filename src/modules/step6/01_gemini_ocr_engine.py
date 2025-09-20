@@ -34,10 +34,11 @@ class GeminiOCREngine:
         self.max_retries = self.config.get('max_retries', 3)
         self.timeout = self.config.get('timeout', 60)
         
-        # Gemini API初期化
-        self.api_key = os.getenv('GEMINI_API_KEY')
-        if not self.api_key:
-            logger.warning("GEMINI_API_KEY環境変数が設定されていません")
+        # Vertex AI初期化用の環境変数チェック
+        self.project_id = os.getenv('GCP_PROJECT_ID')
+        self.location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not self.project_id:
+            logger.warning("GCP_PROJECT_ID環境変数が設定されていません")
         
         logger.debug(f"GeminiOCREngine初期化: {self.model}")
     
@@ -60,75 +61,76 @@ class GeminiOCREngine:
     
     def _prepare_images_for_api(self, image_paths: List[str]) -> List:
         """
-        複数画像をAPI用に準備
-        
+        複数画像をVertex AI用に準備
+
         Args:
             image_paths: 画像パスのリスト
-            
+
         Returns:
-            List: API用画像オブジェクトのリスト
+            List: Vertex AI用画像オブジェクトのリスト
         """
+        from vertexai.generative_models import Image, Part
+
         images = []
-        
+
         try:
-            import io
-            from PIL import Image
-            
             for image_path in image_paths:
-                image_base64 = self._encode_image_to_base64(image_path)
-                if image_base64:
-                    image_data = base64.b64decode(image_base64)
-                    pil_image = Image.open(io.BytesIO(image_data))
-                    images.append(pil_image)
+                if os.path.exists(image_path):
+                    image = Image.load_from_file(image_path)
+                    images.append(image)
                 else:
-                    logger.warning(f"画像の準備に失敗: {image_path}")
-                    
+                    logger.warning(f"画像ファイルが見つかりません: {image_path}")
+
         except Exception as e:
             logger.error(f"画像準備エラー: {e}")
-            
+
         return images
     
-    async def _call_gemini_api(self, images: List, prompt: str) -> Dict:
+    async def _call_vertex_ai_api(self, images: List, prompt: str) -> Dict:
         """
-        Gemini APIを非同期で呼び出し
-        
+        Vertex AIを非同期で呼び出し
+
         Args:
-            images: API用画像オブジェクトのリスト
+            images: Vertex AI用画像オブジェクトのリスト
             prompt: プロンプト
-            
+
         Returns:
             Dict: API応答結果
         """
         try:
-            import google.generativeai as genai
-            
-            # Gemini API設定
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(self.model)
-            
+            import vertexai
+            from vertexai.generative_models import GenerativeModel, GenerationConfig
+
+            # Vertex AI初期化
+            vertexai.init(project=self.project_id, location=self.location)
+            model = GenerativeModel(self.model)
+
             # リクエスト内容を構築（プロンプト + 複数画像）
             content = [prompt] + images
-            
+
+            # 生成設定
+            generation_config = GenerationConfig(
+                temperature=self.temperature,
+                max_output_tokens=self.max_output_tokens
+            )
+
             # API呼び出しを非同期で実行
             response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: model.generate_content(
                     content,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=self.temperature,
-                        max_output_tokens=self.max_output_tokens
-                    )
+                    generation_config=generation_config
                 )
             )
-            
+
             return {
                 "success": True,
                 "response_text": response.text,
                 "model": self.model
             }
-            
+
         except Exception as e:
-            logger.error(f"Gemini API呼び出しエラー: {e}")
+            logger.error(f"Vertex AI API呼び出しエラー: {e}")
             return {
                 "success": False,
                 "error": str(e)
@@ -247,9 +249,9 @@ class GeminiOCREngine:
             system_prompt = prompts.get('system_prompt', '')
             user_prompt = prompts.get('user_prompt', '')
             full_prompt = system_prompt + "\n\n" + user_prompt
-            
-            # Gemini API呼び出し
-            api_result = await self._call_gemini_api(images, full_prompt)
+
+            # Vertex AI API呼び出し
+            api_result = await self._call_vertex_ai_api(images, full_prompt)
             
             if not api_result["success"]:
                 # リトライ処理

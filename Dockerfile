@@ -21,12 +21,17 @@ RUN pip install --no-cache-dir --compile \
     Pillow \
     opencv-python-headless \
     numpy \
-    google-generativeai \
+    google-cloud-aiplatform \
     google-cloud-documentai \
     flask \
     gunicorn \
     google-cloud-storage \
     && pip cache purge
+
+# Vertex AI用パッケージをインストール
+RUN pip install --no-cache-dir --compile \
+    google-cloud-aiplatform \
+    vertexai
 
 # ultralytics は重いので条件付きでインストール（環境変数で制御）
 ARG INSTALL_ULTRALYTICS=false

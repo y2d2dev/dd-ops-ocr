@@ -1,0 +1,28 @@
+{
+  "session_id": "20250920_134503",
+  "processing_timestamp": "2025-09-20T13:45:03.475431",
+  "integration_summary": {
+    "gemini": {
+      "files_count": 3,
+      "total_characters": 4947
+    },
+    "document_ai": {
+      "files_count": 0,
+      "total_characters": 0
+    }
+  },
+  "session_directories": {
+    "converted_images": "data/output/converted_images/test_20250920_134417",
+    "llm_judgments": "data/output/llm_judgments/test_20250920_134417",
+    "dewarped": "data/output/dewarped/test_20250920_134417",
+    "split_images": "data/output/split_images/test_20250920_134417",
+    "super_resolved": "data/output/super_resolved/test_20250920_134417",
+    "final_results": "data/output/final_results/test_20250920_134417",
+    "ocr_results": "data/output/final_results/test_20250920_134417/ocr_results",
+    "document_ai_results": "data/output/final_results/test_20250920_134417/document_ai_results"
+  },
+  "output_files": {
+    "gemini_integrated": "gemini_integrated_20250920_134503.txt",
+    "document_ai_integrated": "document_ai_integrated_20250920_134503.txt"
+  }
+}
