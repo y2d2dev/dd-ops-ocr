@@ -4,8 +4,12 @@ PyMuPDF
 Pillow
 opencv-python-headless
 numpy
-google-generativeai
+google-cloud-aiplatform
+vertexai
 google-cloud-documentai
+flask
+gunicorn
+google-cloud-storage
 ultralytics
 
 # Development dependencies

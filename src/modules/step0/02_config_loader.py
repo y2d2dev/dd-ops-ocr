@@ -28,10 +28,6 @@ def load_config(config_path: str) -> Dict:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
-        # 環境変数による設定の上書き
-        if 'GEMINI_API_KEY' in os.environ:
-            config.setdefault('llm_evaluation', {})['api_key'] = os.environ['GEMINI_API_KEY']
-        
         return config
         
     except Exception as e:

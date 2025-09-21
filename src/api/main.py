@@ -7,7 +7,6 @@ from flask import Flask, request, jsonify
 from datetime import datetime
 import traceback
 from typing import Dict, Any, Optional
-import google.generativeai as genai
 from google.cloud import storage
 import subprocess
 import sys
@@ -86,7 +85,8 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
         ]
         
         logger.info(f"🚀 Running main_pipeline.py with command: {' '.join(cmd)}")
-        
+        logger.info(f"🔍 Working directory for subprocess: {project_root}")
+
         result = subprocess.run(
             cmd,
             cwd=str(project_root),
@@ -135,7 +135,6 @@ def health_check():
 def debug_blobs():
     """GCS内のblobをデバッグ用にリストする"""
     try:
-        from google.cloud import storage
         
         prefix = request.args.get('prefix', '')
         bucket_name = 'app_contracts_staging'
@@ -370,9 +369,14 @@ def pubsub_push():
             logger.error(f"❌ PubSub message data is not a string, type: {type(pubsub_message.get('data'))}")
             return jsonify({"error": "Bad Request: message data must be base64 encoded"}), 400
             
-        if not isinstance(storage_object, dict) or "id" not in storage_object:
-            logger.error(f"❌ Invalid Storage Object format - type: {type(storage_object)}, has 'id': {'id' in storage_object if isinstance(storage_object, dict) else 'N/A'}")
+        if not isinstance(storage_object, dict):
+            logger.error(f"❌ Invalid Storage Object format - type: {type(storage_object)}")
             return jsonify({"error": "Bad Request: invalid Storage Object"}), 400
+
+        # Test用でidが無い場合は自動生成
+        if "id" not in storage_object:
+            logger.warning("⚠️ Storage Object has no 'id' field, generating one for testing...")
+            storage_object["id"] = f"test-{storage_object.get('name', 'unknown')}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
         object_id = storage_object.get("id", "")
         object_name = storage_object.get("name", "")
@@ -566,41 +570,23 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
         filename = os.path.basename(object_name)
         local_file_path = pdf_dir / filename
         download_from_gcs(gcs_uri, str(local_file_path))
-        
-        logger.info(f"Starting OCR pipeline for: {local_file_path}")
-        
-        # main_pipeline.pyを実行
-        pipeline_result = run_main_pipeline(str(local_file_path))
-        
-        if not pipeline_result["success"]:
-            logger.error(f"Pipeline execution failed: {pipeline_result.get('error')}")
-            return {
-                'success': False,
-                'error': pipeline_result.get('error', 'Pipeline execution failed')
-            }
-        
-        # 処理後にPDFファイルを削除
-        if local_file_path.exists():
-            local_file_path.unlink()
-            logger.info(f"Cleaned up local PDF file: {local_file_path}")
-        
-        output_bucket = os.environ.get('GCS_BUCKET_NAME', bucket_name)
-        
-        # 結果ファイルをGCSにアップロード
-        basename = os.path.splitext(filename)[0]
-        
-        # resultディレクトリ内のファイルを確認・アップロード
-        # Cloud Runでは結果もtmpに出力される可能性を考慮
+
+        # 処理開始前にresultディレクトリをクリーンアップ
         project_root = get_project_root()
         result_dir = project_root / "result"
         if not result_dir.exists():
             result_dir = Path("/tmp/result")
 
+        # 詳細ログ追加でデバッグ
+        logger.info(f"🔍 project_root: {project_root}")
+        logger.info(f"🔍 result_dir: {result_dir}")
+        logger.info(f"🔍 result_dir.exists(): {result_dir.exists()}")
+
         # 重要: Cloud Runでは毎回新しいインスタンスが起動されるはずだが、
         # Dockerイメージに古いresultファイルが含まれている可能性があるため、
         # 処理開始前に必ずresultディレクトリをクリーンアップ
         if result_dir.exists():
-            logger.info(f"🧹 Cleaning up result directory: {result_dir}")
+            logger.info(f"🧹 Cleaning up result directory before processing: {result_dir}")
             for old_file in result_dir.glob("*"):
                 if old_file.is_file():
                     try:
@@ -609,6 +595,56 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
                     except Exception as e:
                         logger.warning(f"Failed to delete old file {old_file.name}: {e}")
 
+        logger.info(f"Starting OCR pipeline for: {local_file_path}")
+
+        # main_pipeline.pyを実行
+        pipeline_result = run_main_pipeline(str(local_file_path))
+
+        # パイプライン実行後の詳細ログ
+        logger.info(f"🔍 After pipeline execution:")
+        logger.info(f"🔍 result_dir.exists(): {result_dir.exists()}")
+        if result_dir.exists():
+            all_files = list(result_dir.glob("*"))
+            logger.info(f"🔍 Files in result_dir: {[f.name for f in all_files]}")
+        else:
+            logger.warning(f"⚠️ result_dir does not exist: {result_dir}")
+
+        # 追加の候補パスもチェック
+        alternative_paths = [
+            Path("/app/result"),
+            project_root / "src" / "result",
+            Path.cwd() / "result",
+            Path("/tmp/result"),
+            Path("/app/src/result")
+        ]
+
+        for alt_path in alternative_paths:
+            logger.info(f"🔍 Checking alternative path: {alt_path}")
+            logger.info(f"🔍 Path exists: {alt_path.exists()}")
+            if alt_path.exists():
+                files = list(alt_path.glob("*"))
+                logger.info(f"🔍 Files in {alt_path}: {[f.name for f in files]}")
+                if files:
+                    logger.info(f"📁 Found {len(files)} files in {alt_path} - using this as result directory")
+                    result_dir = alt_path  # 実際にファイルがある場所を使用
+                    break
+
+        if not pipeline_result["success"]:
+            logger.error(f"Pipeline execution failed: {pipeline_result.get('error')}")
+            return {
+                'success': False,
+                'error': pipeline_result.get('error', 'Pipeline execution failed')
+            }
+
+        # 処理後にPDFファイルを削除
+        if local_file_path.exists():
+            local_file_path.unlink()
+            logger.info(f"Cleaned up local PDF file: {local_file_path}")
+
+        output_bucket = os.environ.get('GCS_BUCKET_NAME', bucket_name)
+
+        # 結果ファイルをGCSにアップロード - パイプライン実行後にファイルを処理
+        basename = os.path.splitext(filename)[0]
         output_files = []
         
         txt_files_to_delete = []  # 削除予定のtxtファイルを追跡
@@ -616,13 +652,13 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
         if result_dir.exists():
             # 最新のファイルを検索（タイムスタンプ付きファイル）
             # 重要: 現在のセッションのファイルのみを処理する
-            for result_file in result_dir.glob("*"):
+            all_files = list(result_dir.glob("*"))
+            logger.info(f"📂 Found {len(all_files)} files in result directory for basename '{basename}'")
+            for result_file in all_files:
                 if result_file.is_file():
-                    # 古いファイルや他のPDFのファイルはスキップ
-                    file_timestamp = result_file.stem.split('_')[-1] if '_' in result_file.stem else ''
-                    if file_timestamp and len(file_timestamp) == 6:  # HHMMSS format
-                        # 1時間以上前のファイルはスキップ
-                        continue
+                    logger.info(f"🔍 Processing file: {result_file.name}")
+                    # ファイル名の基本チェックのみ実行
+                    # 古いファイル判定は削除し、現在のPDFに関連するファイルのみ処理
 
                     # ファイル名に現在のPDFのbasenameが含まれているかチェック
                     if basename not in result_file.name:
@@ -709,7 +745,7 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
 
 def convert_local_text_to_contract_schema(file_content: str, basename: str) -> Optional[Dict[str, Any]]:
     """
-    ローカルのテキストをGeminiの構造化出力を使って契約書スキーマに変換
+    ローカルのテキストをVertex AIの構造化出力を使って契約書スキーマに変換
 
     Args:
         file_content: テキスト内容
@@ -719,8 +755,17 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
         構造化された契約書データまたはNone
     """
     try:
-        # Gemini APIの設定
-        genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+        # Vertex AI設定
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig
+
+        project_id = os.getenv('GCP_PROJECT_ID')
+        location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not project_id:
+            logger.error("GCP_PROJECT_ID環境変数が設定されていません")
+            return None
+
+        vertexai.init(project=project_id, location=location)
 
         # 契約書スキーマの定義
         contract_schema = {
@@ -765,14 +810,12 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
             logger.warning(f"Empty content provided")
             return None
 
-        # Geminiモデルの初期化（構造化出力対応）
-        model = genai.GenerativeModel(
-            'gemini-2.5-pro',
-            generation_config={
-                "response_mime_type": "application/json",
-                "response_schema": contract_schema,
-                "max_output_tokens": 32768  # 最大出力トークン数を設定
-            }
+        # Vertex AIモデルの初期化（構造化出力対応）
+        model = GenerativeModel('gemini-2.5-flash')
+        generation_config = GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=contract_schema,
+            max_output_tokens=65535
         )
 
         # プロンプトの作成
@@ -810,8 +853,11 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
 - 出力は必ず完全なJSON形式で、途中で切れることなく最後まで出力してください
 """
 
-        # Geminiに送信して構造化出力を取得
-        response = model.generate_content(prompt)
+        # Vertex AIに送信して構造化出力を取得
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config
+        )
 
         # JSONとしてパース
         structured_data = json.loads(response.text)
@@ -821,13 +867,13 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
         return structured_data
 
     except Exception as e:
-        logger.error(f"Error in Gemini structured output: {str(e)}")
+        logger.error(f"Error in Vertex AI structured output: {str(e)}")
         return None
 
 
 def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Dict[str, Any]]:
     """
-    GCSに保存されたテキストファイルをGeminiの構造化出力を使って契約書スキーマに変換
+    GCSに保存されたテキストファイルをVertex AIの構造化出力を使って契約書スキーマに変換
 
     Args:
         gcs_file_path: GCSのファイルパス
@@ -837,8 +883,17 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
         構造化された契約書データまたはNone
     """
     try:
-        # Gemini APIの設定
-        genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+        # Vertex AI設定
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig
+
+        project_id = os.getenv('GCP_PROJECT_ID')
+        location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not project_id:
+            logger.error("GCP_PROJECT_ID環境変数が設定されていません")
+            return None
+
+        vertexai.init(project=project_id, location=location)
         
         # 契約書スキーマの定義
         contract_schema = {
@@ -885,16 +940,14 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
             logger.warning(f"Could not read content from: {gcs_file_path}")
             return None
         
-        # Geminiモデルの初期化（構造化出力対応）
-        model = genai.GenerativeModel(
-            'gemini-2.5-pro',
-            generation_config={
-                "response_mime_type": "application/json",
-                "response_schema": contract_schema,
-                "max_output_tokens": 32768  # 最大出力トークン数を設定
-            }
+        # Vertex AIモデルの初期化（構造化出力対応）
+        model = GenerativeModel('gemini-2.5-flash')
+        generation_config = GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=contract_schema,
+            max_output_tokens=65535
         )
-        
+
         # プロンプトの作成
         prompt = f"""
 以下のOCR処理済みテキストを解析し、契約書の構造化データとして抽出してください。
@@ -930,33 +983,35 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
 - 出力は必ず完全なJSON形式で、途中で切れることなく最後まで出力してください
 """
         
-        # Geminiに送信して構造化出力を取得
-        response = model.generate_content(prompt)
-        
+        # Vertex AIに送信して構造化出力を取得
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config
+        )
+
         # JSONとしてパース
         structured_data = json.loads(response.text)
-        
+
         logger.info(f"Successfully structured contract data with {len(structured_data.get('result', {}).get('articles', []))} articles")
-        
+
         return structured_data
-        
+
     except Exception as e:
-        logger.error(f"Error in Gemini structured output: {str(e)}")
+        logger.error(f"Error in Vertex AI structured output: {str(e)}")
         return None
 
 
 def download_text_from_gcs(gcs_path: str) -> Optional[str]:
     """
     GCSからテキストファイルの内容を読み取り
-    
+
     Args:
         gcs_path: GCSのファイルパス (gs://bucket/path/to/file.txt)
-    
+
     Returns:
         ファイル内容またはNone
     """
     try:
-        from google.cloud import storage
         
         # GCS URIをパース
         if not gcs_path.startswith('gs://'):
@@ -984,7 +1039,6 @@ def download_from_gcs(gcs_uri: str, local_path: str) -> str:
     """
     GCSからファイルをダウンロード
     """
-    from google.cloud import storage
     import urllib.parse
     
     if not gcs_uri.startswith('gs://'):
@@ -1068,7 +1122,6 @@ def upload_file_to_gcs(local_path: str, bucket_name: str, blob_name: str) -> str
     """
     ファイルをGCSにアップロード
     """
-    from google.cloud import storage
     
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
@@ -1083,7 +1136,6 @@ def upload_json_to_gcs(json_data: Dict[str, Any], bucket_name: str, blob_path: s
     """
     JSONデータをGCSにアップロード
     """
-    from google.cloud import storage
     
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
@@ -1100,7 +1152,6 @@ def upload_results_to_gcs(result: Dict[str, Any], bucket_name: str, prefix: str)
     """
     処理結果をGCSにアップロード
     """
-    from google.cloud import storage
     
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
