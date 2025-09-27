@@ -6,11 +6,12 @@ import shutil
 from flask import Flask, request, jsonify
 from datetime import datetime
 import traceback
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from google.cloud import storage
 import subprocess
 import sys
 from pathlib import Path
+import requests
 
 # UTF-8エンコーディングを確実にする
 os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
@@ -425,6 +426,8 @@ def pubsub_push():
         if result["success"]:
             response["contract_json"] = result.get("contract_json", "")
             response["output_files"] = result.get("output_files", [])
+            response["structured_json"] = result.get("structured_json", "")
+            response["external_api_result"] = result.get("external_api_result", {})
             logger.info(f"Successfully processed PDF: {filename}")
         else:
             response["error"] = result.get("error", "Processing failed")
@@ -686,21 +689,42 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
                     output_files.append(gcs_path)
                     logger.info(f"✅ Result file uploaded to: {gcs_path}")
 
-        # ローカルのtxtファイルを使用してGeminiで構造化
+        # ローカルのtxtファイルを使用してGeminiで構造化＋外部API送信
         structured_json_path = None
+        external_api_result = None
         logger.info(f"🔍 Looking for local txt files to structure. Found {len(txt_files_to_delete)} txt files")
         for txt_file in txt_files_to_delete:
             # 統合されたファイル（integratedを含む）を特定
             if 'integrated' in txt_file.name:
                 logger.info(f"🎯 Found integrated file for structuring: {txt_file.name}")
                 try:
-                    logger.info(f"🧠 Starting Gemini structured output for local file: {txt_file.name}")
-                    # ローカルファイルから直接テキストを読み込み
-                    with open(txt_file, 'r', encoding='utf-8') as f:
-                        file_content = f.read()
+                    # 外部APIにTXTファイルを送信
+                    logger.info(f"📤 Sending TXT file to external API: {txt_file.name}")
+                    external_api_result = send_txt_to_external_api(str(txt_file), workspace_id, project_id)
+                    if external_api_result and external_api_result.get("success"):
+                        logger.info("✅ 外部API送信成功")
 
-                    # Geminiの構造化出力を使用（ローカルファイル版）
-                    structured_result = convert_local_text_to_contract_schema(file_content, basename)
+                        # GCSから外部API結果ファイルを収集
+                        logger.info(f"🔍 GCSから外部API結果ファイルを収集: {basename}")
+                        gcs_text_files = collect_ocr_text_files_from_gcs(output_bucket, workspace_id, project_id, basename)
+
+                        if gcs_text_files:
+                            logger.info(f"📄 外部API結果ファイル {len(gcs_text_files)}個を発見")
+                            # 複数GCSファイルを使用してGemini構造化
+                            structured_result = convert_gcs_text_files_to_contract_schema(gcs_text_files, basename)
+                        else:
+                            logger.warning("⚠️ 外部API結果ファイルが見つからないため、ローカルファイルで構造化")
+                            # フォールバック: ローカルファイルで構造化
+                            with open(txt_file, 'r', encoding='utf-8') as f:
+                                file_content = f.read()
+                            structured_result = convert_local_text_to_contract_schema(file_content, basename)
+                    else:
+                        logger.warning(f"⚠️ 外部API送信失敗、ローカルファイルで構造化: {external_api_result}")
+                        # フォールバック: ローカルファイルで構造化
+                        with open(txt_file, 'r', encoding='utf-8') as f:
+                            file_content = f.read()
+                        structured_result = convert_local_text_to_contract_schema(file_content, basename)
+
                     if structured_result:
                         # 構造化されたJSONをafter_ocrに保存
                         json_output_path = f"{workspace_id}/{project_id}/after_ocr/{basename}.json"
@@ -732,6 +756,7 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             'success': True,
             'output_files': output_files,
             'structured_json': structured_json_path,
+            'external_api_result': external_api_result,
             'pipeline_result': pipeline_result
         }
         
@@ -742,6 +767,151 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             'success': False,
             'error': str(e)
         }
+
+def convert_gcs_text_files_to_contract_schema(gcs_file_paths: List[str], basename: str) -> Optional[Dict[str, Any]]:
+    """
+    GCS上の複数テキストファイルをVertex AIの構造化出力を使って契約書スキーマに変換
+
+    Args:
+        gcs_file_paths: GCSテキストファイルパスのリスト
+        basename: ファイルのベース名
+
+    Returns:
+        構造化された契約書データまたはNone
+    """
+    try:
+        # Vertex AI設定
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig
+
+        project_id = os.getenv('GCP_PROJECT_ID')
+        location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not project_id:
+            logger.error("GCP_PROJECT_ID環境変数が設定されていません")
+            return None
+
+        vertexai.init(project=project_id, location=location)
+
+        # 契約書スキーマの定義
+        contract_schema = {
+            "type": "object",
+            "properties": {
+                "success": {"type": "boolean"},
+                "info": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "party": {"type": "string"},  # カンマ区切りの当事者名
+                        "start_date": {"type": "string"},  # 空文字列で対応
+                        "end_date": {"type": "string"},  # 空文字列で対応
+                        "conclusion_date": {"type": "string"}  # 空文字列で対応
+                    },
+                    "required": ["title", "party"]
+                },
+                "result": {
+                    "type": "object",
+                    "properties": {
+                        "articles": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "article_number": {"type": "string"},  # "第1条" または "署名欄"
+                                    "title": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "table_number": {"type": "string"}  # 表の場合のみ
+                                },
+                                "required": ["content", "title"]  # titleも必須にする
+                            }
+                        }
+                    },
+                    "required": ["articles"]
+                }
+            },
+            "required": ["success", "info", "result"]
+        }
+
+        # 複数ファイルのテキスト内容を収集・統合
+        all_text_content = []
+        for i, gcs_path in enumerate(gcs_file_paths):
+            logger.info(f"📖 GCSファイルを読み込み中 ({i+1}/{len(gcs_file_paths)}): {gcs_path}")
+            file_content = download_text_from_gcs(gcs_path)
+            if file_content:
+                # ファイル名をセパレーターとして追加
+                filename = os.path.basename(gcs_path)
+                all_text_content.append(f"\n=== {filename} ===\n{file_content}")
+            else:
+                logger.warning(f"⚠️ ファイル読み込み失敗: {gcs_path}")
+
+        if not all_text_content:
+            logger.warning("全てのファイル読み込みに失敗しました")
+            return None
+
+        # 統合テキスト作成
+        integrated_content = "\n".join(all_text_content)
+        logger.info(f"📄 統合テキスト作成完了: {len(integrated_content)}文字 ({len(gcs_file_paths)}ファイル)")
+
+        # Vertex AIモデルの初期化（構造化出力対応）
+        model = GenerativeModel('gemini-2.5-flash')
+        generation_config = GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=contract_schema,
+            max_output_tokens=65535
+        )
+
+        # プロンプトの作成
+        prompt = f"""
+以下のOCR処理済みテキストを解析し、契約書の構造化データとして抽出してください。
+
+ファイル名: {basename}
+処理ファイル数: {len(gcs_file_paths)}
+
+統合テキスト内容:
+{integrated_content}
+
+抽出指示:
+1. success: 常にtrue
+2. info部分:
+   - title: 契約書のタイトル（見つからない場合はファイル名を使用）
+   - party: 契約当事者をカンマ区切りで記載（例: "株式会社A,株式会社B"）
+   - start_date: 契約開始日（YYYY-MM-DD形式、見つからない場合は空文字列）
+   - end_date: 契約終了日（YYYY-MM-DD形式、見つからない場合は空文字列）
+   - conclusion_date: 契約締結日（YYYY-MM-DD形式、見つからない場合は空文字列）
+
+3. result部分:
+   - articles: 契約条項の配列（全ての条項を漏れなく抽出）
+     - article_number: 条項番号（例: "第1条"、"第2条"、番号がない場合は"署名欄"等）
+     - title: 条項のタイトル（見出しがない場合は内容から要約）
+     - content: 条項の完全な内容（省略禁止）
+     - table_number: 表がある場合のみ表番号
+
+重要な注意事項:
+- 複数ファイルのテキストが統合されています。ファイル間の重複内容は適切に処理してください
+- テキスト内の全ての条項を必ず抽出してください（第1条から最後まで）
+- 各条項のcontentは完全にコピーし、省略や要約は行わないでください
+- 条項番号が明記されていない部分（前文、署名欄、付記等）も独立した条項として扱ってください
+- 日付は可能な限りYYYY-MM-DD形式に変換してください
+- 表や図がある場合はHTML形式でcontentに含めてください
+- 署名欄も必ず1つの条項として扱ってください
+- 出力は必ず完全なJSON形式で、途中で切れることなく最後まで出力してください
+"""
+
+        # Vertex AIに送信して構造化出力を取得
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config
+        )
+
+        # JSONとしてパース
+        structured_data = json.loads(response.text)
+
+        logger.info(f"✅ 複数ファイル構造化成功: {len(structured_data.get('result', {}).get('articles', []))}条項 ({len(gcs_file_paths)}ファイルから)")
+
+        return structured_data
+
+    except Exception as e:
+        logger.error(f"❌ GCS複数ファイル構造化エラー: {str(e)}")
+        return None
 
 def convert_local_text_to_contract_schema(file_content: str, basename: str) -> Optional[Dict[str, Any]]:
     """
@@ -1152,18 +1322,123 @@ def upload_results_to_gcs(result: Dict[str, Any], bucket_name: str, prefix: str)
     """
     処理結果をGCSにアップロード
     """
-    
+
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
-    
+
     result_json = json.dumps(result, ensure_ascii=False, indent=2)
     blob_name = f"{prefix}result.json"
     blob = bucket.blob(blob_name)
-    
+
     logger.info(f"Uploading results to gs://{bucket_name}/{blob_name}")
     blob.upload_from_string(result_json, content_type='application/json')
-    
+
     return f"gs://{bucket_name}/{blob_name}"
+
+def collect_ocr_text_files_from_gcs(bucket_name: str, workspace_id: str, project_id: str, basename: str) -> List[str]:
+    """
+    GCSから外部API処理結果のテキストファイルを収集
+
+    Args:
+        bucket_name: GCSバケット名
+        workspace_id: ワークスペースID
+        project_id: プロジェクトID
+        basename: PDFのベース名（拡張子なし）
+
+    Returns:
+        収集したテキストファイルのGCSパスのリスト
+    """
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+
+        # ocr_text配下を検索
+        prefix = f"{workspace_id}/{project_id}/ocr_text/"
+
+        logger.info(f"🔍 GCSでテキストファイルを検索: gs://{bucket_name}/{prefix}")
+
+        blobs = list(bucket.list_blobs(prefix=prefix))
+        matching_files = []
+
+        for blob in blobs:
+            # ファイル名が {basename}.txt または {basename}_01.txt のパターンにマッチするかチェック
+            blob_filename = os.path.basename(blob.name)
+
+            # パターンマッチング
+            if (blob_filename == f"{basename}.txt" or
+                blob_filename.startswith(f"{basename}_") and blob_filename.endswith(".txt")):
+
+                gcs_path = f"gs://{bucket_name}/{blob.name}"
+                matching_files.append(gcs_path)
+                logger.info(f"📄 見つかったテキストファイル: {gcs_path}")
+
+        logger.info(f"✅ テキストファイル収集完了: {len(matching_files)}ファイル")
+        return matching_files
+
+    except Exception as e:
+        logger.error(f"❌ GCSテキストファイル収集エラー: {str(e)}")
+        return []
+
+def send_txt_to_external_api(txt_file_path: str, workspace_id: str, project_id: str) -> Optional[Dict[str, Any]]:
+    """
+    TXTファイルを外部APIに送信
+
+    Args:
+        txt_file_path: 送信するTXTファイルのパス
+        workspace_id: ワークスペースID
+        project_id: プロジェクトID
+
+    Returns:
+        API応答結果またはNone
+    """
+    try:
+        api_url = "https://dd-ops-ocr-api-v2-75499681521.asia-northeast1.run.app/ocr"
+
+        # ファイルが存在するかチェック
+        if not os.path.exists(txt_file_path):
+            logger.error(f"TXTファイルが見つかりません: {txt_file_path}")
+            return None
+
+        logger.info(f"🚀 外部APIにTXTファイルを送信: {txt_file_path}")
+        logger.info(f"📊 workspace_id: {workspace_id}, project_id: {project_id}")
+
+        # multipart/form-dataでファイルを送信
+        with open(txt_file_path, 'rb') as f:
+            files = {
+                'file': (os.path.basename(txt_file_path), f, 'text/plain')
+            }
+            data = {
+                'workspace_id': workspace_id,
+                'project_id': project_id
+            }
+
+            # API呼び出し
+            response = requests.post(
+                api_url,
+                files=files,
+                data=data,
+                timeout=300  # 5分タイムアウト
+            )
+
+        if response.status_code == 200:
+            logger.info("✅ 外部API呼び出し成功")
+            try:
+                result = response.json()
+                return result
+            except json.JSONDecodeError:
+                logger.warning("⚠️ API応答がJSONではありません")
+                return {"success": True, "response_text": response.text}
+        else:
+            logger.error(f"❌ 外部API呼び出し失敗: {response.status_code}")
+            logger.error(f"❌ 応答内容: {response.text}")
+            return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
+
+    except requests.exceptions.Timeout:
+        logger.error("❌ 外部API呼び出しがタイムアウトしました")
+        return {"success": False, "error": "API call timeout"}
+    except Exception as e:
+        logger.error(f"❌ 外部API呼び出しエラー: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 
 if __name__ == '__main__':
