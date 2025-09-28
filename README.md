@@ -47,7 +47,7 @@ gcloud run services update dd-ops-ocr-api-v2 \
   --image gcr.io/reflected-flux-462908-s6/dd-ops-ocr-api \
   --memory 2Gi \
   --timeout 3600 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=reflected-flux-462908-s6,GCS_BUCKET_NAME=app_contracts_staging,DD_OPS_MODELS_BUCKET=dd_ops_models,PYTHONDONTWRITEBYTECODE=1,PYTHONUNBUFFERED=1,GEMINI_API_KEY=AIzaSyCCZL0v2FOVqYbWhshAeyETCj0zE3_5m1s,DOCUMENT_AI_PROJECT_ID=75499681521,DOCUMENT_AI_PROCESSOR_ID=599b6ebb19fa1478,DOCUMENT_AI_LOCATION=us"
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=reflected-flux-462908-s6,GCS_BUCKET_NAME=app_contracts_staging,DD_OPS_MODELS_BUCKET=dd_ops_models,PYTHONDONTWRITEBYTECODE=1,PYTHONUNBUFFERED=1,DOCUMENT_AI_PROJECT_ID=75499681521,DOCUMENT_AI_PROCESSOR_ID=599b6ebb19fa1478,DOCUMENT_AI_LOCATION=us"
 ```
 
 ### 重要な設定ポイント
@@ -56,9 +56,9 @@ gcloud run services update dd-ops-ocr-api-v2 \
 - **メモリ**: `2Gi`（OCR処理でメモリ使用量が多いため。1Giでは不足）
 - **タイムアウト**: `3600`秒（1時間、OCR処理の完了を待つため最長設定）
 - **必須環境変数**:
-  - `GEMINI_API_KEY`: Gemini API認証用
   - `DOCUMENT_AI_*`: Document AI設定
   - `GOOGLE_APPLICATION_CREDENTIALS`は**設定しない**（Cloud Runデフォルト認証を使用）
+  - **Vertex AI認証**: Cloud Runのデフォルトサービスアカウントを使用（GEMINI_API_KEY不要）
 
 ### 現在のサービスURL
 https://dd-ops-ocr-api-v2-75499681521.asia-northeast1.run.app

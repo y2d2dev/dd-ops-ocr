@@ -22,7 +22,7 @@ class LLMJudgment:
         """
         self.config = config.get('llm_evaluation', {}).get('judgment', {})
         self.provider = self.config.get('provider', 'gemini')
-        self.model = self.config.get('model', 'gemini-2.0-flash-lite')
+        self.model = self.config.get('model', 'gemini-2.5-flash')
         self.max_retries = self.config.get('max_retries', 3)
         self.timeout = self.config.get('timeout', 30)
         self.temperature = self.config.get('temperature', 0.1)

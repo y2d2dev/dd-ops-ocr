@@ -40,29 +40,29 @@ llm_evaluation:
   #判定をひとまとめにする場合
   judgment:
     provider: "gemini"
-    model: "gemini-2.0-flash-lite"    # flash or pro
+    model: "gemini-2.5-flash"    # flash or pro
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 32768    
+    max_output_tokens: 65536    
 
   # 細かく設定する場合
   dewarp_judgment:
     provider: "gemini"
-    model: "gemini-2.0-flash-lite"    # flash or pro
+    model: "gemini-2.5-flash"    # flash or pro
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 32768
+    max_output_tokens: 65536
   
   # OrientationDetector で使う LLM の設定
   orientation_judgment:
     provider: "gemini"
-    model: "gemini-2.0-flash-lite"    # flash or pro
+    model: "gemini-2.5-flash"    # flash or pro
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 32768
+    max_output_tokens: 65536
 
   page_count_etc_judgment:
     provider: "gemini"
