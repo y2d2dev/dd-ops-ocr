@@ -83,8 +83,12 @@ class TextIntegrationEngine:
             
             logger.info(f"Gemini OCRテキスト収集完了: 成功={len(successful_files)}, 失敗={len(failed_files)}")
 
+            logger.info(f"🚨 DEBUG: len(txt_files) = {len(txt_files)}")
+            logger.info(f"🚨 DEBUG: チェック開始")
+
             # ファイルが見つからない場合の詳細なエラーメッセージ
             if len(txt_files) == 0:
+                logger.info(f"🚨 DEBUG: ファイル0個の条件に入った！")
                 error_msg = f"OCR結果ファイルが見つかりません。検索パターン: {txt_pattern}, ディレクトリ: {ocr_results_dir}"
                 logger.error(error_msg)
                 # ディレクトリの内容を確認
