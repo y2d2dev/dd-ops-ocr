@@ -44,7 +44,7 @@ def test_vertex_ai_initialization():
 
         # 初期化テスト（実際のAPI呼び出しは行わない）
         vertexai.init(project=project_id, location=location)
-        model = GenerativeModel('gemini-2.5-flash')
+        model = GenerativeModel('gemini-2.0-flash-exp')
 
         print("✅ Vertex AI initialization successful")
         return True
