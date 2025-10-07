@@ -613,7 +613,9 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             local_file_path.unlink()
             logger.info(f"Cleaned up local PDF file: {local_file_path}")
 
-        output_bucket = os.environ.get('GCS_BUCKET_NAME', bucket_name)
+        # 入力バケットと同じバケットに出力（環境変数は使用しない）
+        output_bucket = bucket_name
+        logger.info(f"📦 Output bucket: {output_bucket} (same as input bucket)")
 
         # 結果ファイルをGCSにアップロード - パイプライン実行後にファイルを処理
         basename = os.path.splitext(filename)[0]
