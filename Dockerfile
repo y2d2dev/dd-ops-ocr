@@ -27,7 +27,6 @@ RUN pip install --no-cache-dir --compile \
     flask \
     gunicorn \
     google-cloud-storage \
-    psutil \
     && pip cache purge
 
 # ultralytics は重いので条件付きでインストール（環境変数で制御）

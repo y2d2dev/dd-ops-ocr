@@ -88,39 +88,14 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
         logger.info(f"🚀 Running main_pipeline.py with command: {' '.join(cmd)}")
         logger.info(f"🔍 Working directory for subprocess: {project_root}")
 
-        # subprocessの出力をリアルタイムでログに流す
-        process = subprocess.Popen(
+        result = subprocess.run(
             cmd,
             cwd=str(project_root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # stderrもstdoutに混ぜる
+            capture_output=True,
             text=True,
             encoding='utf-8',
-            bufsize=1,
-            universal_newlines=True
+            timeout=300  # 5分タイムアウト
         )
-
-        # リアルタイムで出力をログに流す
-        stdout_lines = []
-        while True:
-            output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
-                break
-            if output:
-                line = output.strip()
-                stdout_lines.append(line)
-                logger.info(f"[PIPELINE] {line}")
-
-        # プロセス終了を待つ
-        return_code = process.poll()
-        stdout_text = '\n'.join(stdout_lines)
-
-        # 結果を作成
-        result = type('Result', (), {
-            'returncode': return_code,
-            'stdout': stdout_text,
-            'stderr': ''  # stderrはstdoutに混ぜたので空
-        })()
         
         if result.returncode == 0:
             logger.info("✅ main_pipeline.py executed successfully")
@@ -140,6 +115,12 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
                 "stderr": result.stderr
             }
             
+    except subprocess.TimeoutExpired:
+        logger.error("❌ main_pipeline.py execution timed out")
+        return {
+            "success": False,
+            "error": "Pipeline execution timed out"
+        }
     except Exception as e:
         logger.error(f"❌ Error running main_pipeline.py: {e}")
         return {
@@ -309,56 +290,6 @@ def ocr_upload():
             "error": str(e)
         }), 500
 
-def cleanup_before_processing():
-    """処理開始前にメモリとリソースをクリーンアップ"""
-    import gc
-    import psutil
-
-    logger.info("🧹 Starting pre-processing cleanup...")
-
-    # 1. 一時ディレクトリをクリアする
-    temp_dirs = ['/tmp/pdf', '/tmp/result', '/tmp/data']
-    for temp_dir in temp_dirs:
-        if os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir)
-                os.makedirs(temp_dir, exist_ok=True)
-                logger.info(f"🗑️ Cleaned temp directory: {temp_dir}")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to clean {temp_dir}: {e}")
-
-    # 2. ガベージコレクションを強制実行
-    collected = gc.collect()
-    logger.info(f"♻️ Garbage collection freed {collected} objects")
-
-    # 3. 孤立したプロセスを確認・終了（可能であれば）
-    try:
-        current_pid = os.getpid()
-        current_process = psutil.Process(current_pid)
-        children = current_process.children(recursive=True)
-        if children:
-            logger.info(f"🔍 Found {len(children)} child processes")
-            for child in children:
-                try:
-                    if child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
-                        logger.info(f"🚫 Terminating child process: {child.pid}")
-                        child.terminate()
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to terminate process {child.pid}: {e}")
-    except Exception as e:
-        logger.warning(f"⚠️ Process cleanup failed: {e}")
-
-    # 4. メモリ使用量を報告
-    try:
-        process = psutil.Process()
-        memory_info = process.memory_info()
-        memory_mb = memory_info.rss / 1024 / 1024
-        logger.info(f"📊 Current memory usage: {memory_mb:.1f} MB")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to get memory info: {e}")
-
-    logger.info("✅ Pre-processing cleanup completed")
-
 @app.route('/pubsub/push', methods=['POST'])
 def pubsub_push():
     """
@@ -369,9 +300,6 @@ def pubsub_push():
         logger.info("="*80)
         logger.info("🔵 PUBSUB PUSH REQUEST RECEIVED")
         logger.info("="*80)
-
-        # 処理開始前にクリーンアップを実行
-        cleanup_before_processing()
         
         logger.info(f"📌 Request Method: {request.method}")
         logger.info(f"📌 Request URL: {request.url}")
@@ -413,14 +341,7 @@ def pubsub_push():
         logger.info(f"  - Message type: {type(pubsub_message)}")
         logger.info(f"  - Message keys: {list(pubsub_message.keys()) if isinstance(pubsub_message, dict) else 'Not a dict'}")
         logger.info(f"  - Full message: {json.dumps(pubsub_message, indent=2)}")
-
-        # OBJECT_DELETEイベントを早期リターンで無視
-        attributes = pubsub_message.get("attributes", {})
-        event_type = attributes.get("eventType", "")
-        if event_type == "OBJECT_DELETE":
-            logger.info(f"🗑️ OBJECT_DELETE event detected - ignoring")
-            return jsonify({"status": "ignored", "reason": "OBJECT_DELETE event"}), 200
-
+        
         if isinstance(pubsub_message.get("data"), str):
             try:
                 logger.info("🔓 Attempting Base64 decode...")
@@ -831,19 +752,13 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
         # Vertex AI設定
         import vertexai
         from vertexai.generative_models import GenerativeModel, GenerationConfig
-        from google.auth import default
 
-        # プロジェクトIDを取得（環境変数またはサービスアカウントから）
         project_id = os.getenv('GCP_PROJECT_ID')
-        if not project_id:
-            try:
-                credentials, project_id = default()
-                logger.info(f"サービスアカウントからプロジェクトIDを取得: {project_id}")
-            except Exception as e:
-                logger.error(f"プロジェクトIDの取得に失敗: {e}")
-                return None
-
         location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not project_id:
+            logger.error("GCP_PROJECT_ID環境変数が設定されていません")
+            return None
+
         vertexai.init(project=project_id, location=location)
 
         # 契約書スキーマの定義
@@ -965,19 +880,13 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
         # Vertex AI設定
         import vertexai
         from vertexai.generative_models import GenerativeModel, GenerationConfig
-        from google.auth import default
 
-        # プロジェクトIDを取得（環境変数またはサービスアカウントから）
         project_id = os.getenv('GCP_PROJECT_ID')
-        if not project_id:
-            try:
-                credentials, project_id = default()
-                logger.info(f"サービスアカウントからプロジェクトIDを取得: {project_id}")
-            except Exception as e:
-                logger.error(f"プロジェクトIDの取得に失敗: {e}")
-                return None
-
         location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not project_id:
+            logger.error("GCP_PROJECT_ID環境変数が設定されていません")
+            return None
+
         vertexai.init(project=project_id, location=location)
         
         # 契約書スキーマの定義
@@ -1320,10 +1229,6 @@ def send_txt_to_external_api(txt_file_path: str, workspace_id: str, project_id: 
                         logger.info(f"📚 分割されたファイル一覧 ({len(split_files)}個):")
                         for idx, file_name in enumerate(sorted(split_files), 1):
                             logger.info(f"  {idx:2d}. {file_name}")
-
-                        # 分割ファイルをafter_ocrに処理
-                        logger.info(f"🔄 分割ファイルのafter_ocr処理を開始...")
-                        process_split_files_to_after_ocr(workspace_id, project_id, base_name_without_ext, split_files)
                     else:
                         logger.info(f"⚠️ 分割ファイルが見つかりません: {prefix}")
 
@@ -1359,74 +1264,6 @@ def send_txt_to_external_api(txt_file_path: str, workspace_id: str, project_id: 
             'success': False,
             'error': str(e)
         }
-
-def process_split_files_to_after_ocr(workspace_id: str, project_id: str, base_name_without_ext: str, split_files: list) -> None:
-    """
-    分割ファイルを一つずつ処理してafter_ocrディレクトリにJSONファイルを生成
-
-    Args:
-        workspace_id: ワークスペースID
-        project_id: プロジェクトID
-        base_name_without_ext: ベースファイル名（拡張子なし）
-        split_files: 分割ファイル名のリスト
-    """
-    try:
-        storage_client = storage.Client()
-        bucket = storage_client.bucket('app_contracts_staging')
-
-        successful_count = 0
-        failed_count = 0
-
-        for file_name in sorted(split_files):
-            try:
-                logger.info(f"📄 Processing split file: {file_name}")
-
-                # GCSから分割ファイルの内容を取得
-                split_file_path = f"{workspace_id}/{project_id}/ocr_text/{base_name_without_ext}/{file_name}"
-                blob = bucket.blob(split_file_path)
-
-                if not blob.exists():
-                    logger.warning(f"⚠️ Split file not found: {split_file_path}")
-                    failed_count += 1
-                    continue
-
-                # テキスト内容を取得
-                file_content = blob.download_as_text(encoding='utf-8')
-                if not file_content or not file_content.strip():
-                    logger.warning(f"⚠️ Empty content in split file: {file_name}")
-                    failed_count += 1
-                    continue
-
-                logger.info(f"📝 Content length: {len(file_content)} characters")
-
-                # Vertex AIで構造化処理を実行
-                structured_data = convert_local_text_to_contract_schema(file_content, file_name)
-
-                if structured_data:
-                    # after_ocrディレクトリにJSONファイルを保存
-                    json_file_name = os.path.splitext(file_name)[0] + '.json'
-                    after_ocr_path = f"{workspace_id}/{project_id}/after_ocr/{json_file_name}"
-
-                    # JSONデータをGCSにアップロード
-                    json_blob = bucket.blob(after_ocr_path)
-                    json_str = json.dumps(structured_data, ensure_ascii=False, indent=2)
-                    json_blob.upload_from_string(json_str, content_type='application/json')
-
-                    logger.info(f"✅ after_ocr JSON saved: gs://app_contracts_staging/{after_ocr_path}")
-                    successful_count += 1
-                else:
-                    logger.error(f"❌ Failed to structure data for: {file_name}")
-                    failed_count += 1
-
-            except Exception as e:
-                logger.error(f"❌ Error processing split file {file_name}: {str(e)}")
-                failed_count += 1
-                continue
-
-        logger.info(f"🎯 after_ocr processing completed: {successful_count} successful, {failed_count} failed")
-
-    except Exception as e:
-        logger.error(f"❌ Error in process_split_files_to_after_ocr: {str(e)}")
 
 
 if __name__ == '__main__':
