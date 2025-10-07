@@ -88,6 +88,10 @@ class Step6Processor:
             ocr_output_dir = session_dirs.get(
                 "ocr_results", session_dirs["final_results"])
 
+            logger.info(f"🔍 DEBUG: Step6保存先ディレクトリ: {ocr_output_dir}")
+            logger.info(f"🔍 DEBUG: session_dirs keys: {list(session_dirs.keys())}")
+            logger.info(f"🔍 DEBUG: ocr_results in session_dirs: {'ocr_results' in session_dirs}")
+
             # 追加メタデータ
             additional_metadata = {
                 "group_key": group_key,
@@ -98,6 +102,8 @@ class Step6Processor:
             save_result = self.text_manager.save_ocr_result(
                 ocr_result, ocr_output_dir, group_key, additional_metadata
             )
+
+            logger.info(f"🔍 DEBUG: 保存結果 - success: {save_result['success']}, saved_files: {save_result.get('saved_files', [])}")
 
             if save_result["success"]:
                 logger.info(f"Step6-01: 完了!! ({group_key}: テキスト保存完了)")
@@ -231,14 +237,9 @@ class Step6Processor:
 
         # Document AIディレクトリの作成
         if "document_ai_results" not in session_dirs:
-            # final_results/{session_id}/document_ai_results の形式で作成
+            # final_results は既に {base_output}/final_results/{session_id} を含んでいる
             final_results_dir = session_dirs.get("final_results", "")
-            session_id = session_dirs.get("session_id", "")
-            if final_results_dir and session_id:
-                base_dir = os.path.join(final_results_dir, session_id)
-                session_dirs["document_ai_results"] = os.path.join(
-                    base_dir, "document_ai_results")
-            elif final_results_dir:
+            if final_results_dir:
                 session_dirs["document_ai_results"] = os.path.join(
                     final_results_dir, "document_ai_results")
             else:
@@ -454,14 +455,9 @@ class Step6Processor:
 
         # OCRディレクトリを作成
         if "ocr_results" not in session_dirs:
-            # final_results/{session_id}/ocr_results の形式で作成
+            # final_results は既に {base_output}/final_results/{session_id} を含んでいる
             final_results_dir = session_dirs.get("final_results", "")
-            session_id = session_dirs.get("session_id", "")
-            if final_results_dir and session_id:
-                base_dir = os.path.join(final_results_dir, session_id)
-                session_dirs["ocr_results"] = os.path.join(
-                    base_dir, "ocr_results")
-            elif final_results_dir:
+            if final_results_dir:
                 session_dirs["ocr_results"] = os.path.join(
                     final_results_dir, "ocr_results")
             else:
