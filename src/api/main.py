@@ -11,7 +11,6 @@ from google.cloud import storage
 import subprocess
 import sys
 from pathlib import Path
-import requests
 
 # UTF-8エンコーディングを確実にする
 os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
@@ -391,27 +390,25 @@ def pubsub_push():
         logger.info(f"  - Size: {storage_object.get('size', 'N/A')} bytes")
         
         name_parts = object_name.split("/")
-
+        logger.info(f"📂 Name parts: {name_parts}")
+        logger.info(f"📂 Number of parts: {len(name_parts)}")
+        
         if len(name_parts) < 3:
-            return "", 200
-
-        # test_contract で始まるファイルを無視
-        if name_parts[0].startswith('test_contract'):
-            return "", 200
-
+            logger.error(f"❌ Invalid object name format: {object_name} - expected at least 3 parts")
+            return jsonify({"error": "Invalid object name format"}), 400
+            
         workspace_id = name_parts[0]
         project_id = name_parts[1]
         filename = "/".join(name_parts[2:])
-
-        if not filename.lower().endswith('.pdf'):
-            return "", 200
-
-        logger.info(f"📂 Name parts: {name_parts}")
-        logger.info(f"📂 Number of parts: {len(name_parts)}")
+        
         logger.info("✨ EXTRACTED INFO:")
         logger.info(f"  - Workspace ID: {workspace_id}")
         logger.info(f"  - Project ID: {project_id}")
         logger.info(f"  - Filename: {filename}")
+        
+        if not filename.lower().endswith('.pdf'):
+            logger.info(f"⚠️ Ignoring non-PDF file: {filename}")
+            return jsonify({"message": "File ignored (not a PDF)"}), 200
             
         logger.info(f"🚀 Starting PDF processing - workspace: {workspace_id}, project: {project_id}, file: {filename}")
         
@@ -689,7 +686,7 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
                     output_files.append(gcs_path)
                     logger.info(f"✅ Result file uploaded to: {gcs_path}")
 
-        # 外部APIに統合されたTXTファイルを送信
+        # ローカルのtxtファイルを使用してGeminiで構造化
         structured_json_path = None
         logger.info(f"🔍 Looking for local txt files to structure. Found {len(txt_files_to_delete)} txt files")
         for txt_file in txt_files_to_delete:
@@ -697,18 +694,27 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             if 'integrated' in txt_file.name:
                 logger.info(f"🎯 Found integrated file for structuring: {txt_file.name}")
                 try:
-                    # 外部APIにTXTファイルを送信
-                    api_result = send_txt_to_external_api(str(txt_file), workspace_id, project_id)
-                    if api_result and api_result.get('success'):
-                        logger.info(f"✅ External API processed successfully: {txt_file.name}")
-                        structured_json_path = api_result.get('result_path', '')
+                    logger.info(f"🧠 Starting Gemini structured output for local file: {txt_file.name}")
+                    # ローカルファイルから直接テキストを読み込み
+                    with open(txt_file, 'r', encoding='utf-8') as f:
+                        file_content = f.read()
+
+                    # Geminiの構造化出力を使用（ローカルファイル版）
+                    structured_result = convert_local_text_to_contract_schema(file_content, basename)
+                    if structured_result:
+                        # 構造化されたJSONをafter_ocrに保存
+                        json_output_path = f"{workspace_id}/{project_id}/after_ocr/{basename}.json"
+                        structured_json_path = upload_json_to_gcs(
+                            structured_result,
+                            output_bucket,
+                            json_output_path
+                        )
+                        logger.info(f"✅ Structured contract JSON saved to: {structured_json_path}")
                         break
                     else:
-                        logger.warning(f"⚠️ External API processing failed for: {txt_file.name}")
-                        error_msg = api_result.get('error', 'Unknown error') if api_result else 'No response'
-                        logger.warning(f"⚠️ Error: {error_msg}")
+                        logger.warning(f"⚠️ Gemini structured output returned None for: {txt_file.name}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to send to external API {txt_file.name}: {str(e)}")
+                    logger.error(f"❌ Failed to structure contract data for {txt_file.name}: {str(e)}")
                     logger.error(f"❌ Stack trace: {traceback.format_exc()}")
                     continue
 
@@ -1146,124 +1152,18 @@ def upload_results_to_gcs(result: Dict[str, Any], bucket_name: str, prefix: str)
     """
     処理結果をGCSにアップロード
     """
-
+    
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
-
+    
     result_json = json.dumps(result, ensure_ascii=False, indent=2)
     blob_name = f"{prefix}result.json"
     blob = bucket.blob(blob_name)
-
+    
     logger.info(f"Uploading results to gs://{bucket_name}/{blob_name}")
     blob.upload_from_string(result_json, content_type='application/json')
-
+    
     return f"gs://{bucket_name}/{blob_name}"
-
-def send_txt_to_external_api(txt_file_path: str, workspace_id: str, project_id: str) -> Optional[Dict[str, Any]]:
-    """
-    TXTファイルを外部APIに送信
-
-    Args:
-        txt_file_path: TXTファイルのパス
-        workspace_id: ワークスペースID
-        project_id: プロジェクトID
-
-    Returns:
-        API応答結果またはNone
-    """
-    try:
-        api_url = "https://document-split-api-75499681521.asia-northeast1.run.app/ocr"
-
-        logger.info(f"📤 Sending TXT file to external API: {os.path.basename(txt_file_path)}")
-        logger.info(f"🚀 外部APIにTXTファイルを送信: {txt_file_path}")
-        logger.info(f"📊 workspace_id: {workspace_id}, project_id: {project_id}")
-
-        # multipart/form-data でファイルを送信
-        with open(txt_file_path, 'rb') as f:
-            files = {
-                'file': (os.path.basename(txt_file_path), f, 'text/plain')
-            }
-            data = {
-                'workspace_id': workspace_id,
-                'project_id': project_id
-            }
-
-            logger.info(f"🌐 外部API呼び出し開始: {api_url}")
-            logger.info(f"📋 送信データ: workspace_id={workspace_id}, project_id={project_id}")
-            logger.info(f"📄 送信ファイル: {os.path.basename(txt_file_path)}")
-
-            logger.info(f"📡 POSTリクエスト送信中...")
-            try:
-                response = requests.post(api_url, files=files, data=data)
-                logger.info(f"✅ POSTリクエスト完了")
-            except Exception as post_error:
-                logger.error(f"❌ POSTリクエストエラー: {str(post_error)}")
-                raise
-
-            logger.info(f"📡 外部API応答受信: ステータスコード={response.status_code}")
-            logger.info(f"📊 応答ヘッダー: {dict(response.headers)}")
-            logger.info(f"📝 応答内容: {response.text}")
-
-            if response.status_code == 200:
-                logger.info(f"✅ 200応答受信 - 外部API呼び出し成功!")
-
-                # 分割後のファイル一覧を取得して表示
-                base_name_without_ext = os.path.splitext(os.path.basename(txt_file_path))[0]
-                gcs_split_path = f"app_contracts_staging/{workspace_id}/{project_id}/ocr_text/{base_name_without_ext}/"
-                logger.info(f"📂 分割ファイル格納先: {gcs_split_path}")
-
-                try:
-                    # GCSから分割ファイル一覧を取得
-                    storage_client = storage.Client()
-                    bucket = storage_client.bucket('app_contracts_staging')
-                    prefix = f"{workspace_id}/{project_id}/ocr_text/{base_name_without_ext}/"
-                    blobs = list(bucket.list_blobs(prefix=prefix))
-
-                    split_files = []
-                    for blob in blobs:
-                        if blob.name.endswith('.txt'):
-                            file_name = os.path.basename(blob.name)
-                            split_files.append(file_name)
-
-                    if split_files:
-                        logger.info(f"📚 分割されたファイル一覧 ({len(split_files)}個):")
-                        for idx, file_name in enumerate(sorted(split_files), 1):
-                            logger.info(f"  {idx:2d}. {file_name}")
-                    else:
-                        logger.info(f"⚠️ 分割ファイルが見つかりません: {prefix}")
-
-                except Exception as list_error:
-                    logger.warning(f"⚠️ 分割ファイル一覧取得エラー: {str(list_error)}")
-
-                try:
-                    result = response.json()
-                    logger.info(f"📦 JSON応答解析成功: {result}")
-                    return {
-                        'success': True,
-                        'response': result,
-                        'result_path': result.get('result_path', '')
-                    }
-                except json.JSONDecodeError:
-                    logger.info(f"📄 テキスト応答として処理: {response.text}")
-                    return {
-                        'success': True,
-                        'response': response.text,
-                        'result_path': ''
-                    }
-            else:
-                logger.error(f"❌ 外部API呼び出し失敗: {response.status_code}")
-                logger.error(f"❌ 応答内容: {response.text}")
-                return {
-                    'success': False,
-                    'error': f"HTTP {response.status_code}: {response.text}"
-                }
-
-    except Exception as e:
-        logger.error(f"❌ 外部API送信エラー: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
 
 
 if __name__ == '__main__':
