@@ -372,7 +372,12 @@ def pubsub_push():
         logger.info(f"  - Workspace ID: {workspace_id}")
         logger.info(f"  - Project ID: {project_id}")
         logger.info(f"  - Filename: {filename}")
-        
+
+        # after_ocrディレクトリのファイルは無視（無限ループ防止）
+        if "after_ocr/" in filename:
+            logger.info(f"⚠️ Ignoring file in after_ocr directory: {filename}")
+            return jsonify({"message": "File ignored (after_ocr directory)"}), 200
+
         if not filename.lower().endswith('.pdf'):
             logger.info(f"⚠️ Ignoring non-PDF file: {filename}")
             return jsonify({"message": "File ignored (not a PDF)"}), 200
