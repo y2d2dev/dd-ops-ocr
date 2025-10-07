@@ -366,14 +366,6 @@ def pubsub_push():
     GCS Storage Object notificationを処理
     """
     try:
-        # envelopeを先に解析してdeliveryAttemptを確認
-        envelope = request.get_json()
-
-        # deliveryAttemptが5以上の場合は早期リターン
-        delivery_attempt = envelope.get('deliveryAttempt', 0) if envelope else 0
-        if delivery_attempt >= 5:
-            return '', 200
-
         logger.info("="*80)
         logger.info("🔵 PUBSUB PUSH REQUEST RECEIVED")
         logger.info("="*80)
@@ -395,16 +387,18 @@ def pubsub_push():
         logger.info(f"📦 Raw Request Data: {request.data}")
         logger.info(f"📦 Request Data Type: {type(request.data)}")
         logger.info(f"📦 Request Data Length: {len(request.data) if request.data else 0}")
-
+        
         logger.info("🔍 Attempting to parse JSON...")
-        # envelopeは既に上で取得済み
-        if envelope:
+        envelope = None
+        try:
+            envelope = request.get_json()
             logger.info(f"✅ JSON parsed successfully")
             logger.info(f"📊 Envelope type: {type(envelope)}")
             logger.info(f"📊 Envelope keys: {list(envelope.keys()) if envelope else 'None'}")
             logger.info(f"📊 Full envelope content: {json.dumps(envelope, indent=2) if envelope else 'None'}")
-        else:
-            logger.error(f"❌ JSON parsing failed: envelope is None")
+        except Exception as json_error:
+            logger.error(f"❌ JSON parsing failed: {str(json_error)}")
+            logger.error(f"❌ Error type: {type(json_error).__name__}")
         
         if not envelope:
             logger.error("❌ No PubSub message received (envelope is None or empty)")
