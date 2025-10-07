@@ -131,41 +131,6 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
 def health_check():
     return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()}), 200
 
-@app.route('/debug-blobs', methods=['GET'])
-def debug_blobs():
-    """GCS内のblobをデバッグ用にリストする"""
-    try:
-        
-        prefix = request.args.get('prefix', '')
-        bucket_name = 'app_contracts_staging'
-        
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
-        
-        blobs = list(bucket.list_blobs(prefix=prefix))
-        
-        blob_info = []
-        for blob in blobs:
-            blob_info.append({
-                'name': blob.name,
-                'size': blob.size,
-                'created': blob.time_created.isoformat() if blob.time_created else None,
-                'content_type': blob.content_type
-            })
-        
-        return jsonify({
-            'bucket': bucket_name,
-            'prefix': prefix,
-            'total_blobs': len(blob_info),
-            'blobs': blob_info
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Debug blobs error: {str(e)}")
-        return jsonify({
-            'error': str(e)
-        }), 500
-
 @app.route('/', methods=['GET'])
 def root():
     """
@@ -346,22 +311,27 @@ def pubsub_push():
         logger.info(f"  - Message type: {type(pubsub_message)}")
         logger.info(f"  - Message keys: {list(pubsub_message.keys()) if isinstance(pubsub_message, dict) else 'Not a dict'}")
         logger.info(f"  - Full message: {json.dumps(pubsub_message, indent=2)}")
-        
+
+        # attributesからbucketIdを取得
+        attributes = pubsub_message.get("attributes", {})
+        object_bucket = attributes.get("bucketId", "")
+        logger.info(f"🗂️ Bucket from attributes: {object_bucket}")
+
         if isinstance(pubsub_message.get("data"), str):
             try:
                 logger.info("🔓 Attempting Base64 decode...")
                 logger.info(f"  - Data length (encoded): {len(pubsub_message['data'])}")
                 logger.info(f"  - First 100 chars: {pubsub_message['data'][:100]}...")
-                
+
                 message_data = base64.b64decode(pubsub_message["data"]).decode("utf-8")
                 logger.info(f"✅ Base64 decode successful")
                 logger.info(f"  - Decoded length: {len(message_data)}")
                 logger.info(f"  - First 200 chars: {message_data[:200] if message_data else 'Empty'}...")
-                
+
                 if not message_data or not message_data.strip():
                     logger.warning(f"⚠️ Decoded message is empty or whitespace only")
                     return jsonify({"status": "ignored", "reason": "Empty message"}), 200
-                
+
                 storage_object = json.loads(message_data)
                 logger.info(f"✅ JSON parse of decoded data successful")
                 logger.info(f"📄 Storage Object keys: {list(storage_object.keys())}")
@@ -374,7 +344,7 @@ def pubsub_push():
         else:
             logger.error(f"❌ PubSub message data is not a string, type: {type(pubsub_message.get('data'))}")
             return jsonify({"error": "Bad Request: message data must be base64 encoded"}), 400
-            
+
         if not isinstance(storage_object, dict):
             logger.error(f"❌ Invalid Storage Object format - type: {type(storage_object)}")
             return jsonify({"error": "Bad Request: invalid Storage Object"}), 400
@@ -383,10 +353,9 @@ def pubsub_push():
         if "id" not in storage_object:
             logger.warning("⚠️ Storage Object has no 'id' field, generating one for testing...")
             storage_object["id"] = f"test-{storage_object.get('name', 'unknown')}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
+
         object_id = storage_object.get("id", "")
         object_name = storage_object.get("name", "")
-        object_bucket = storage_object.get("bucket", "")
         
         logger.info("🗂️ STORAGE OBJECT INFO:")
         logger.info(f"  - Object ID: {object_id}")
