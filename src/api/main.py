@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 import requests
+import threading
+import re
 
 # UTF-8エンコーディングを確実にする
 os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
@@ -101,10 +103,13 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
         )
 
         # リアルタイムで出力をログに流す
+        logger.info("📖 Subprocess output streaming started...")
         stdout_lines = []
         while True:
             output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
+            poll_result = process.poll()
+            if output == '' and poll_result is not None:
+                logger.info(f"📖 Subprocess ended with poll result: {poll_result}")
                 break
             if output:
                 line = output.strip()
@@ -115,13 +120,16 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
         return_code = process.poll()
         stdout_text = '\n'.join(stdout_lines)
 
+        logger.info(f"🏁 Subprocess finished with return code: {return_code}")
+        logger.info(f"📊 Total output lines: {len(stdout_lines)}")
+
         # 結果を作成
         result = type('Result', (), {
             'returncode': return_code,
             'stdout': stdout_text,
             'stderr': ''  # stderrはstdoutに混ぜたので空
         })()
-        
+
         if result.returncode == 0:
             logger.info("✅ main_pipeline.py executed successfully")
             return {
@@ -359,66 +367,80 @@ def cleanup_before_processing():
 
     logger.info("✅ Pre-processing cleanup completed")
 
+def process_pdf_async(object_bucket: str, object_name: str, workspace_id: str, project_id: str, filename: str):
+    """
+    非同期でPDF処理を実行するバックグラウンド関数
+    """
+    try:
+        logger.info("="*80)
+        logger.info(f"🔄 [ASYNC] Starting background PDF processing")
+        logger.info(f"📂 [ASYNC] Workspace: {workspace_id}")
+        logger.info(f"📂 [ASYNC] Project: {project_id}")
+        logger.info(f"📄 [ASYNC] File: {filename}")
+        logger.info(f"🪣 [ASYNC] Bucket: {object_bucket}")
+        logger.info("="*80)
+
+        # 処理開始前にクリーンアップを実行
+        logger.info("🧹 [ASYNC] Running cleanup before processing...")
+        cleanup_before_processing()
+        logger.info("✅ [ASYNC] Cleanup completed")
+
+        logger.info("🚀 [ASYNC] Starting PDF processing pipeline...")
+        result = process_single_pdf(object_bucket, object_name, workspace_id, project_id)
+
+        logger.info("="*80)
+        if result["success"]:
+            logger.info(f"✅ [ASYNC] Successfully completed PDF processing: {filename}")
+            logger.info(f"📁 [ASYNC] Output files count: {len(result.get('output_files', []))}")
+            for idx, output_file in enumerate(result.get('output_files', []), 1):
+                logger.info(f"  {idx}. {output_file}")
+            if result.get('structured_json'):
+                logger.info(f"📊 [ASYNC] Structured JSON: {result.get('structured_json')}")
+        else:
+            logger.error(f"❌ [ASYNC] Failed to process PDF: {filename}")
+            logger.error(f"❌ [ASYNC] Error: {result.get('error')}")
+        logger.info("="*80)
+
+    except Exception as e:
+        logger.error("="*80)
+        logger.error(f"❌ [ASYNC] Unexpected error in async PDF processing")
+        logger.error(f"❌ [ASYNC] File: {filename}")
+        logger.error(f"❌ [ASYNC] Error: {str(e)}")
+        logger.error(f"❌ [ASYNC] Stack trace:")
+        logger.error(traceback.format_exc())
+        logger.error("="*80)
+    finally:
+        logger.info(f"🏁 [ASYNC] Background thread finished for: {filename}")
+        logger.info("="*80)
+
 @app.route('/pubsub/push', methods=['POST'])
 def pubsub_push():
     """
-    Cloud PubSub Push通知を受け取るエンドポイント
+    Cloud PubSub Push通知を受け取るエンドポイント（非同期処理対応）
     GCS Storage Object notificationを処理
     """
     try:
         # envelopeを先に解析してdeliveryAttemptを確認
         envelope = request.get_json()
 
-        # deliveryAttemptが5以上の場合は早期リターン
+        # deliveryAttemptが2以上の場合は早期リターン（ログなし）
         delivery_attempt = envelope.get('deliveryAttempt', 0) if envelope else 0
-        if delivery_attempt >= 5:
+        if delivery_attempt >= 2:
             return '', 200
 
         logger.info("="*80)
         logger.info("🔵 PUBSUB PUSH REQUEST RECEIVED")
         logger.info("="*80)
 
-        # 処理開始前にクリーンアップを実行
-        cleanup_before_processing()
-        
-        logger.info(f"📌 Request Method: {request.method}")
-        logger.info(f"📌 Request URL: {request.url}")
-        logger.info(f"📌 Request Path: {request.path}")
-        
-        logger.info("📋 REQUEST HEADERS:")
-        for key, value in request.headers:
-            logger.info(f"  - {key}: {value}")
-        
-        logger.info(f"📝 Content-Type: {request.content_type}")
-        logger.info(f"📝 Content-Length: {request.content_length}")
-        
-        logger.info(f"📦 Raw Request Data: {request.data}")
-        logger.info(f"📦 Request Data Type: {type(request.data)}")
-        logger.info(f"📦 Request Data Length: {len(request.data) if request.data else 0}")
-
-        logger.info("🔍 Attempting to parse JSON...")
-        # envelopeは既に上で取得済み
-        if envelope:
-            logger.info(f"✅ JSON parsed successfully")
-            logger.info(f"📊 Envelope type: {type(envelope)}")
-            logger.info(f"📊 Envelope keys: {list(envelope.keys()) if envelope else 'None'}")
-            logger.info(f"📊 Full envelope content: {json.dumps(envelope, indent=2) if envelope else 'None'}")
-        else:
-            logger.error(f"❌ JSON parsing failed: envelope is None")
-        
         if not envelope:
             logger.error("❌ No PubSub message received (envelope is None or empty)")
             return jsonify({"error": "Bad Request: no PubSub message received"}), 400
-            
+
         if not isinstance(envelope, dict) or "message" not in envelope:
-            logger.error(f"❌ Invalid PubSub message format - envelope type: {type(envelope)}, has 'message' key: {'message' in envelope if isinstance(envelope, dict) else 'N/A'}")
+            logger.error(f"❌ Invalid PubSub message format")
             return jsonify({"error": "Bad Request: invalid PubSub message format"}), 400
-            
+
         pubsub_message = envelope["message"]
-        logger.info("📨 PUBSUB MESSAGE:")
-        logger.info(f"  - Message type: {type(pubsub_message)}")
-        logger.info(f"  - Message keys: {list(pubsub_message.keys()) if isinstance(pubsub_message, dict) else 'Not a dict'}")
-        logger.info(f"  - Full message: {json.dumps(pubsub_message, indent=2)}")
 
         # OBJECT_DELETEイベントを早期リターンで無視
         attributes = pubsub_message.get("attributes", {})
@@ -427,61 +449,42 @@ def pubsub_push():
             logger.info(f"🗑️ OBJECT_DELETE event detected - ignoring")
             return jsonify({"status": "ignored", "reason": "OBJECT_DELETE event"}), 200
 
+        # Base64デコード
         if isinstance(pubsub_message.get("data"), str):
             try:
-                logger.info("🔓 Attempting Base64 decode...")
-                logger.info(f"  - Data length (encoded): {len(pubsub_message['data'])}")
-                logger.info(f"  - First 100 chars: {pubsub_message['data'][:100]}...")
-                
                 message_data = base64.b64decode(pubsub_message["data"]).decode("utf-8")
-                logger.info(f"✅ Base64 decode successful")
-                logger.info(f"  - Decoded length: {len(message_data)}")
-                logger.info(f"  - First 200 chars: {message_data[:200] if message_data else 'Empty'}...")
-                
+
                 if not message_data or not message_data.strip():
-                    logger.warning(f"⚠️ Decoded message is empty or whitespace only")
+                    logger.warning(f"⚠️ Decoded message is empty")
                     return jsonify({"status": "ignored", "reason": "Empty message"}), 200
-                
+
                 storage_object = json.loads(message_data)
-                logger.info(f"✅ JSON parse of decoded data successful")
-                logger.info(f"📄 Storage Object keys: {list(storage_object.keys())}")
-                logger.info(f"📄 Full Storage Object: {json.dumps(storage_object, indent=2)}")
             except Exception as e:
                 logger.error(f"❌ Failed to decode PubSub message: {str(e)}")
-                logger.error(f"❌ Error type: {type(e).__name__}")
-                logger.error(f"❌ Stack trace: {traceback.format_exc()}")
                 return jsonify({"error": "Bad Request: invalid message data"}), 400
         else:
-            logger.error(f"❌ PubSub message data is not a string, type: {type(pubsub_message.get('data'))}")
+            logger.error(f"❌ PubSub message data is not a string")
             return jsonify({"error": "Bad Request: message data must be base64 encoded"}), 400
-            
+
         if not isinstance(storage_object, dict):
-            logger.error(f"❌ Invalid Storage Object format - type: {type(storage_object)}")
+            logger.error(f"❌ Invalid Storage Object format")
             return jsonify({"error": "Bad Request: invalid Storage Object"}), 400
 
-        # Test用でidが無い場合は自動生成
-        if "id" not in storage_object:
-            logger.warning("⚠️ Storage Object has no 'id' field, generating one for testing...")
-            storage_object["id"] = f"test-{storage_object.get('name', 'unknown')}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
-        object_id = storage_object.get("id", "")
         object_name = storage_object.get("name", "")
         object_bucket = storage_object.get("bucket", "")
-        
-        logger.info("🗂️ STORAGE OBJECT INFO:")
-        logger.info(f"  - Object ID: {object_id}")
-        logger.info(f"  - Object Name: {object_name}")
-        logger.info(f"  - Bucket: {object_bucket}")
-        logger.info(f"  - Content Type: {storage_object.get('contentType', 'N/A')}")
-        logger.info(f"  - Size: {storage_object.get('size', 'N/A')} bytes")
-        
+
+        logger.info(f"📄 Object: {object_name}")
+        logger.info(f"🪣 Bucket: {object_bucket}")
+
         name_parts = object_name.split("/")
 
+        # バリデーション：早期リターン条件
         if len(name_parts) < 3:
+            logger.info("⏭️ Skipping: insufficient path depth")
             return "", 200
 
-        # test_contract で始まるファイルを無視
         if name_parts[0].startswith('test_contract'):
+            logger.info("⏭️ Skipping: test_contract prefix")
             return "", 200
 
         workspace_id = name_parts[0]
@@ -489,19 +492,18 @@ def pubsub_push():
         filename = "/".join(name_parts[2:])
 
         if not filename.lower().endswith('.pdf'):
+            logger.info("⏭️ Skipping: not a PDF file")
             return "", 200
 
-        logger.info(f"📂 Name parts: {name_parts}")
-        logger.info(f"📂 Number of parts: {len(name_parts)}")
-        logger.info("✨ EXTRACTED INFO:")
-        logger.info(f"  - Workspace ID: {workspace_id}")
-        logger.info(f"  - Project ID: {project_id}")
-        logger.info(f"  - Filename: {filename}")
-            
-        logger.info(f"🚀 Starting PDF processing - workspace: {workspace_id}, project: {project_id}, file: {filename}")
-        
+        logger.info(f"✅ Validation passed - workspace: {workspace_id}, project: {project_id}, file: {filename}")
+
+        # 処理開始前にクリーンアップを実行
+        cleanup_before_processing()
+
+        logger.info(f"🚀 Starting PDF processing: {filename}")
+
         result = process_single_pdf(object_bucket, object_name, workspace_id, project_id)
-        
+
         response = {
             "workspace_id": workspace_id,
             "project_id": project_id,
@@ -509,17 +511,17 @@ def pubsub_push():
             "success": result["success"],
             "timestamp": datetime.now().isoformat()
         }
-        
+
         if result["success"]:
             response["contract_json"] = result.get("contract_json", "")
             response["output_files"] = result.get("output_files", [])
-            logger.info(f"Successfully processed PDF: {filename}")
+            logger.info(f"✅ Successfully processed PDF: {filename}")
         else:
             response["error"] = result.get("error", "Processing failed")
-            logger.error(f"Failed to process PDF: {filename} - {result.get('error')}")
-            
+            logger.error(f"❌ Failed to process PDF: {filename} - {result.get('error')}")
+
         return jsonify(response), 200
-        
+
     except Exception as e:
         logger.error(f"Unexpected error in PubSub handler: {str(e)}")
         logger.error(traceback.format_exc())
@@ -1306,6 +1308,10 @@ def send_txt_to_external_api(txt_file_path: str, workspace_id: str, project_id: 
 
                 # 分割後のファイル一覧を取得して表示
                 base_name_without_ext = os.path.splitext(os.path.basename(txt_file_path))[0]
+                # gemini_integrated_プレフィックスを削除
+                base_name_without_ext = base_name_without_ext.replace('gemini_integrated_', '')
+                # タイムスタンプ(_YYYYMMDD_HHMMSS)を削除
+                base_name_without_ext = re.sub(r'_\d{8}_\d{6}$', '', base_name_without_ext)
                 gcs_split_path = f"app_contracts_staging/{workspace_id}/{project_id}/ocr_text/{base_name_without_ext}/"
                 logger.info(f"📂 分割ファイル格納先: {gcs_split_path}")
 
@@ -1403,6 +1409,10 @@ def process_split_files_to_after_ocr(workspace_id: str, project_id: str, base_na
                     failed_count += 1
                     continue
 
+                # ```json や ``` を削除
+                file_content = re.sub(r'```json\s*', '', file_content)
+                file_content = re.sub(r'```\s*', '', file_content)
+
                 logger.info(f"📝 Content length: {len(file_content)} characters")
 
                 # Vertex AIで構造化処理を実行
@@ -1410,7 +1420,7 @@ def process_split_files_to_after_ocr(workspace_id: str, project_id: str, base_na
 
                 if structured_data:
                     # after_ocrディレクトリにJSONファイルを保存
-                    json_file_name = os.path.splitext(file_name)[0] + '.json'
+                    json_file_name = f"{base_name_without_ext}_{os.path.splitext(file_name)[0]}.json"
                     after_ocr_path = f"{workspace_id}/{project_id}/after_ocr/{json_file_name}"
 
                     # JSONデータをGCSにアップロード
