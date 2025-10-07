@@ -126,15 +126,19 @@ class TextResultManager:
                 try:
                     txt_filename = self._create_output_filename(base_name, 'txt')
                     txt_path = os.path.join(output_dir, txt_filename)
-                    
+
                     text_content = self._prepare_text_content(ocr_result)
-                    
+
+                    # 空のテキストの場合は警告
+                    if not text_content:
+                        logger.warning(f"⚠️ 空のOCRテキスト: {base_name}")
+
                     with open(txt_path, 'w', encoding=self.encoding) as f:
                         f.write(text_content)
-                    
+
                     saved_files.append(txt_path)
-                    logger.debug(f"テキストファイル保存: {txt_path}")
-                    
+                    logger.info(f"✅ テキストファイル保存: {txt_path} ({len(text_content)}文字)")
+
                 except Exception as e:
                     error_msg = f"テキストファイル保存エラー: {e}"
                     logger.error(error_msg)

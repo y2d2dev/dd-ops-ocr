@@ -45,7 +45,11 @@ class TextIntegrationEngine:
         try:
             # OCR結果テキストファイルを検索
             txt_pattern = os.path.join(ocr_results_dir, "*_ocr_result.txt")
+            logger.info(f"🔍 DEBUG: Gemini検索パターン: {txt_pattern}")
             txt_files = glob.glob(txt_pattern)
+            logger.info(f"🔍 DEBUG: Gemini見つかったファイル数: {len(txt_files)}")
+            if txt_files:
+                logger.info(f"🔍 DEBUG: Gemini最初のファイル: {txt_files[0] if txt_files else 'None'}")
             
             if self.sort_by_filename:
                 txt_files.sort()
@@ -78,7 +82,41 @@ class TextIntegrationEngine:
                     failed_files.append(txt_file)
             
             logger.info(f"Gemini OCRテキスト収集完了: 成功={len(successful_files)}, 失敗={len(failed_files)}")
-            
+
+            # ファイルが見つからない場合の詳細なエラーメッセージ
+            if len(txt_files) == 0:
+                error_msg = f"OCR結果ファイルが見つかりません。検索パターン: {txt_pattern}, ディレクトリ: {ocr_results_dir}"
+                logger.error(error_msg)
+                # ディレクトリの内容を確認
+                if os.path.exists(ocr_results_dir):
+                    all_files = os.listdir(ocr_results_dir)
+                    logger.error(f"ディレクトリ内のファイル一覧: {all_files[:10]}")  # 最初の10個のみ表示
+                else:
+                    logger.error(f"ディレクトリが存在しません: {ocr_results_dir}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "collected_texts": [],
+                    "successful_files": [],
+                    "failed_files": [],
+                    "total_files": 0,
+                    "total_characters": 0
+                }
+
+            # ファイルは見つかったが、全て読み込みに失敗した場合
+            if len(successful_files) == 0:
+                error_msg = f"{len(txt_files)}個のファイルが見つかりましたが、全て読み込みに失敗しました"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "collected_texts": collected_texts,
+                    "successful_files": successful_files,
+                    "failed_files": failed_files,
+                    "total_files": len(txt_files),
+                    "total_characters": 0
+                }
+
             return {
                 "success": len(successful_files) > 0,
                 "collected_texts": collected_texts,
@@ -115,7 +153,11 @@ class TextIntegrationEngine:
         try:
             # Document AI結果テキストファイルを検索
             txt_pattern = os.path.join(document_ai_results_dir, "*_documentai_result.txt")
+            logger.info(f"🔍 DEBUG: Document AI検索パターン: {txt_pattern}")
             txt_files = glob.glob(txt_pattern)
+            logger.info(f"🔍 DEBUG: Document AI見つかったファイル数: {len(txt_files)}")
+            if txt_files:
+                logger.info(f"🔍 DEBUG: Document AI最初のファイル: {txt_files[0] if txt_files else 'None'}")
             
             if self.sort_by_filename:
                 txt_files.sort()
@@ -148,7 +190,41 @@ class TextIntegrationEngine:
                     failed_files.append(txt_file)
             
             logger.info(f"Document AI OCRテキスト収集完了: 成功={len(successful_files)}, 失敗={len(failed_files)}")
-            
+
+            # ファイルが見つからない場合の詳細なエラーメッセージ
+            if len(txt_files) == 0:
+                error_msg = f"Document AI結果ファイルが見つかりません。検索パターン: {txt_pattern}, ディレクトリ: {document_ai_results_dir}"
+                logger.error(error_msg)
+                # ディレクトリの内容を確認
+                if os.path.exists(document_ai_results_dir):
+                    all_files = os.listdir(document_ai_results_dir)
+                    logger.error(f"ディレクトリ内のファイル一覧: {all_files[:10]}")  # 最初の10個のみ表示
+                else:
+                    logger.error(f"ディレクトリが存在しません: {document_ai_results_dir}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "collected_texts": [],
+                    "successful_files": [],
+                    "failed_files": [],
+                    "total_files": 0,
+                    "total_characters": 0
+                }
+
+            # ファイルは見つかったが、全て読み込みに失敗した場合
+            if len(successful_files) == 0:
+                error_msg = f"{len(txt_files)}個のファイルが見つかりましたが、全て読み込みに失敗しました"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "collected_texts": collected_texts,
+                    "successful_files": successful_files,
+                    "failed_files": failed_files,
+                    "total_files": len(txt_files),
+                    "total_characters": 0
+                }
+
             return {
                 "success": len(successful_files) > 0,
                 "collected_texts": collected_texts,
