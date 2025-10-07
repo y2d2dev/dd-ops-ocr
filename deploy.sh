@@ -27,7 +27,6 @@ gcloud run services update $SERVICE_NAME \
   --image $IMAGE_NAME \
   --memory 2Gi \
   --timeout 3600 \
-  --concurrency 1 \
   --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCS_BUCKET_NAME=app_contracts_staging,DD_OPS_MODELS_BUCKET=dd_ops_models,PYTHONDONTWRITEBYTECODE=1,PYTHONUNBUFFERED=1,GCP_PROJECT_ID=$PROJECT_ID,GCP_LOCATION=us-central1,DOCUMENT_AI_PROJECT_ID=75499681521,DOCUMENT_AI_PROCESSOR_ID=599b6ebb19fa1478,DOCUMENT_AI_LOCATION=us"
 
 echo "✅ デプロイ完了！"
