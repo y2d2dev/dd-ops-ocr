@@ -239,9 +239,12 @@ class Step6Processor:
         if "document_ai_results" not in session_dirs:
             # final_results は既に {base_output}/final_results/{session_id} を含んでいる
             final_results_dir = session_dirs.get("final_results", "")
+            logger.info(f"🔍 DEBUG [process_ocr_groups]: final_results_dir = {final_results_dir}")
+            logger.info(f"🔍 DEBUG [process_ocr_groups]: session_id = {session_dirs.get('session_id', 'N/A')}")
             if final_results_dir:
                 session_dirs["document_ai_results"] = os.path.join(
                     final_results_dir, "document_ai_results")
+                logger.info(f"🔍 DEBUG [process_ocr_groups]: document_ai_results set to = {session_dirs['document_ai_results']}")
             else:
                 logger.warning(
                     "Document AIディレクトリの作成に失敗しました。final_resultsディレクトリを使用します")
@@ -457,9 +460,12 @@ class Step6Processor:
         if "ocr_results" not in session_dirs:
             # final_results は既に {base_output}/final_results/{session_id} を含んでいる
             final_results_dir = session_dirs.get("final_results", "")
+            logger.info(f"🔍 DEBUG [process_step5_results]: final_results_dir = {final_results_dir}")
+            logger.info(f"🔍 DEBUG [process_step5_results]: session_id = {session_dirs.get('session_id', 'N/A')}")
             if final_results_dir:
                 session_dirs["ocr_results"] = os.path.join(
                     final_results_dir, "ocr_results")
+                logger.info(f"🔍 DEBUG [process_step5_results]: ocr_results set to = {session_dirs['ocr_results']}")
             else:
                 logger.warning("OCRディレクトリの作成に失敗しました。final_resultsディレクトリを使用します")
                 session_dirs["ocr_results"] = session_dirs.get(

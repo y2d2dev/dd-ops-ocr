@@ -4,7 +4,7 @@
 
 # 設定
 PROJECT_ID="reflected-flux-462908-s6"
-SERVICE_NAME="dd-ops-ocr-api-v2"
+SERVICE_NAME="dd-ops-ocr"
 REGION="asia-northeast1"  # 東京リージョン
 IMAGE_NAME="gcr.io/$PROJECT_ID/dd-ops-ocr-api"
 
@@ -22,7 +22,7 @@ docker push $IMAGE_NAME
 
 # 3. Cloud Runサービスを作成/更新
 echo "🌐 Cloud Runにデプロイ中..."
-gcloud run services update $SERVICE_NAME \
+gcloud run deploy $SERVICE_NAME \
   --region $REGION \
   --image $IMAGE_NAME \
   --memory 2Gi \

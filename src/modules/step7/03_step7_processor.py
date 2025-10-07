@@ -54,7 +54,12 @@ class Step7Processor:
             # OCR結果ディレクトリを取得
             ocr_results_dir = session_dirs.get("ocr_results")
             document_ai_results_dir = session_dirs.get("document_ai_results")
-            
+
+            logger.info(f"🔍 DEBUG: Step7が探すディレクトリ")
+            logger.info(f"🔍 DEBUG: ocr_results_dir: {ocr_results_dir}")
+            logger.info(f"🔍 DEBUG: document_ai_results_dir: {document_ai_results_dir}")
+            logger.info(f"🔍 DEBUG: session_dirs keys: {list(session_dirs.keys())}")
+
             if not ocr_results_dir or not os.path.exists(ocr_results_dir):
                 logger.error(f"OCR結果ディレクトリが見つかりません: {ocr_results_dir}")
                 return self._create_error_result("OCR結果ディレクトリが見つかりません")

@@ -90,28 +90,20 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
         result = subprocess.run(
             cmd,
             cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
+            capture_output=False,
             timeout=300  # 5分タイムアウト
         )
-        
+
         if result.returncode == 0:
             logger.info("✅ main_pipeline.py executed successfully")
             return {
-                "success": True,
-                "stdout": result.stdout,
-                "stderr": result.stderr
+                "success": True
             }
         else:
             logger.error(f"❌ main_pipeline.py failed with return code: {result.returncode}")
-            logger.error(f"❌ STDOUT: {result.stdout}")
-            logger.error(f"❌ STDERR: {result.stderr}")
             return {
                 "success": False,
-                "error": f"Pipeline execution failed: {result.stderr}",
-                "stdout": result.stdout,
-                "stderr": result.stderr
+                "error": f"Pipeline execution failed with return code: {result.returncode}"
             }
             
     except subprocess.TimeoutExpired:
