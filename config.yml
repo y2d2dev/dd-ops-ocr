@@ -160,6 +160,10 @@ ocr:
   combine_results: true
   output_format: "markdown"
 
+# Step6並列処理設定（429エラー対策）
+step6:
+  max_concurrent_ocr: 1  # グループの並列処理数を1に制限（Vertex AI 429エラー対策）
+
 # デバッグ・開発設定（本番用）
 debug:
   save_intermediate_results: false  # 本番では中間結果を保存しない
