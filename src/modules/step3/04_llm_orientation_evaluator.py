@@ -29,7 +29,8 @@ class LLMOrientationEvaluator:
         
         # Vertex AI初期化用の環境変数チェック
         self.project_id = os.getenv('GCP_PROJECT_ID')
-        self.location = os.getenv('GCP_LOCATION', 'us-central1')
+        # グローバルエンドポイントを使用（429エラー対策）
+        self.location = 'global'
         if not self.project_id:
             logger.warning("GCP_PROJECT_ID環境変数が設定されていません")
         
