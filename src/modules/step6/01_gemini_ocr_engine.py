@@ -254,10 +254,11 @@ class GeminiOCREngine:
             api_result = await self._call_vertex_ai_api(images, full_prompt)
             
             if not api_result["success"]:
-                # リトライ処理
+                # リトライ処理（429エラー対策: 2分待機）
                 if retry_count < self.max_retries:
-                    logger.warning(f"OCR処理失敗、リトライ {retry_count + 1}/{self.max_retries}")
-                    await asyncio.sleep(2 ** retry_count)  # 指数バックオフ
+                    wait_time = 120  # 2分待機
+                    logger.warning(f"⏳ OCR処理失敗、{wait_time}秒待機してリトライ {retry_count + 1}/{self.max_retries}")
+                    await asyncio.sleep(wait_time)
                     return await self.extract_text_from_images(
                         image_paths, prompts, retry_count + 1
                     )
