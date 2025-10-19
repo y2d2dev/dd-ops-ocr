@@ -341,7 +341,12 @@ def pubsub_push():
         logger.info(f"  - Message type: {type(pubsub_message)}")
         logger.info(f"  - Message keys: {list(pubsub_message.keys()) if isinstance(pubsub_message, dict) else 'Not a dict'}")
         logger.info(f"  - Full message: {json.dumps(pubsub_message, indent=2)}")
-        
+
+        # attributesからbucketIdを取得
+        attributes = pubsub_message.get("attributes", {})
+        bucket_id = attributes.get("bucketId", "")
+        logger.info(f"📦 Bucket ID from attributes: {bucket_id}")
+
         if isinstance(pubsub_message.get("data"), str):
             try:
                 logger.info("🔓 Attempting Base64 decode...")
@@ -412,8 +417,12 @@ def pubsub_push():
             return jsonify({"message": "File ignored (not a PDF)"}), 200
             
         logger.info(f"🚀 Starting PDF processing - workspace: {workspace_id}, project: {project_id}, file: {filename}")
-        
-        result = process_single_pdf(object_bucket, object_name, workspace_id, project_id)
+
+        # bucketIdがない場合はobject_bucketをフォールバック
+        target_bucket = bucket_id if bucket_id else object_bucket
+        logger.info(f"🪣 Using bucket: {target_bucket}")
+
+        result = process_single_pdf(target_bucket, object_name, workspace_id, project_id)
         
         response = {
             "workspace_id": workspace_id,
@@ -642,7 +651,8 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             local_file_path.unlink()
             logger.info(f"Cleaned up local PDF file: {local_file_path}")
 
-        output_bucket = os.environ.get('GCS_BUCKET_NAME', bucket_name)
+        # 出力先バケットは入力と同じバケットを使用
+        output_bucket = bucket_name
 
         # 結果ファイルをGCSにアップロード - パイプライン実行後にファイルを処理
         basename = os.path.splitext(filename)[0]
