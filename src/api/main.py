@@ -701,7 +701,7 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
                         file_content = f.read()
 
                     # Geminiの構造化出力を使用（ローカルファイル版）
-                    structured_result = convert_local_text_to_contract_schema(file_content, basename)
+                    structured_result = convert_local_text_to_contract_schema(file_content, basename, workspace_id, project_id, output_bucket)
                     if structured_result:
                         # 構造化されたJSONをafter_ocrに保存
                         json_output_path = f"{workspace_id}/{project_id}/after_ocr/{basename}.json"
@@ -744,13 +744,16 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             'error': str(e)
         }
 
-def convert_local_text_to_contract_schema(file_content: str, basename: str) -> Optional[Dict[str, Any]]:
+def convert_local_text_to_contract_schema(file_content: str, basename: str, workspace_id: str, project_id: str, bucket_name: str) -> Optional[Dict[str, Any]]:
     """
     ローカルのテキストをVertex AIの構造化出力を使って契約書スキーマに変換
 
     Args:
         file_content: テキスト内容
         basename: ファイルのベース名
+        workspace_id: ワークスペースID
+        project_id: プロジェクトID
+        bucket_name: GCSバケット名
 
     Returns:
         構造化された契約書データまたはNone
@@ -902,11 +905,29 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
         )
 
         # JSONとしてパース
-        structured_data = json.loads(response.text)
+        try:
+            structured_data = json.loads(response.text)
+            logger.info(f"Successfully structured contract data with {len(structured_data.get('result', {}).get('articles', []))} articles")
+            return structured_data
+        except json.JSONDecodeError as json_error:
+            logger.error(f"Error in Vertex AI structured output: {str(json_error)}")
 
-        logger.info(f"Successfully structured contract data with {len(structured_data.get('result', {}).get('articles', []))} articles")
+            # エラー時にレスポンスをGCSに保存
+            from datetime import datetime
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            error_path = f"{workspace_id}/{project_id}/err/{basename}_error_{timestamp}.txt"
 
-        return structured_data
+            try:
+                upload_json_to_gcs(
+                    {"error": str(json_error), "response": response.text},
+                    bucket_name,
+                    error_path.replace('.txt', '.json')
+                )
+                logger.info(f"📝 Error response saved to: gs://{bucket_name}/{error_path.replace('.txt', '.json')}")
+            except Exception as upload_error:
+                logger.error(f"Failed to save error response: {upload_error}")
+
+            return None
 
     except Exception as e:
         logger.error(f"Error in Vertex AI structured output: {str(e)}")
