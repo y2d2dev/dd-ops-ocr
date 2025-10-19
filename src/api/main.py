@@ -92,8 +92,7 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
             cwd=str(project_root),
             capture_output=True,
             text=True,
-            encoding='utf-8',
-            timeout=300  # 5分タイムアウト
+            encoding='utf-8'
         )
         
         if result.returncode == 0:
@@ -113,13 +112,7 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
-            
-    except subprocess.TimeoutExpired:
-        logger.error("❌ main_pipeline.py execution timed out")
-        return {
-            "success": False,
-            "error": "Pipeline execution timed out"
-        }
+
     except Exception as e:
         logger.error(f"❌ Error running main_pipeline.py: {e}")
         return {
@@ -299,22 +292,22 @@ def pubsub_push():
         logger.info("="*80)
         logger.info("🔵 PUBSUB PUSH REQUEST RECEIVED")
         logger.info("="*80)
-        
+
         logger.info(f"📌 Request Method: {request.method}")
         logger.info(f"📌 Request URL: {request.url}")
         logger.info(f"📌 Request Path: {request.path}")
-        
+
         logger.info("📋 REQUEST HEADERS:")
         for key, value in request.headers:
             logger.info(f"  - {key}: {value}")
-        
+
         logger.info(f"📝 Content-Type: {request.content_type}")
         logger.info(f"📝 Content-Length: {request.content_length}")
-        
+
         logger.info(f"📦 Raw Request Data: {request.data}")
         logger.info(f"📦 Request Data Type: {type(request.data)}")
         logger.info(f"📦 Request Data Length: {len(request.data) if request.data else 0}")
-        
+
         logger.info("🔍 Attempting to parse JSON...")
         envelope = None
         try:
@@ -326,10 +319,18 @@ def pubsub_push():
         except Exception as json_error:
             logger.error(f"❌ JSON parsing failed: {str(json_error)}")
             logger.error(f"❌ Error type: {type(json_error).__name__}")
-        
+
         if not envelope:
             logger.error("❌ No PubSub message received (envelope is None or empty)")
             return jsonify({"error": "Bad Request: no PubSub message received"}), 400
+
+        # Check delivery attempt and skip if too many retries
+        delivery_attempt = envelope.get('deliveryAttempt', 0)
+        logger.info(f"📬 Delivery attempt: {delivery_attempt}")
+
+        if delivery_attempt > 2:
+            logger.warning(f"⚠️ Skipping message after {delivery_attempt} delivery attempts")
+            return jsonify({"status": "skipped", "reason": f"Too many retries ({delivery_attempt})"}), 200
             
         if not isinstance(envelope, dict) or "message" not in envelope:
             logger.error(f"❌ Invalid PubSub message format - envelope type: {type(envelope)}, has 'message' key: {'message' in envelope if isinstance(envelope, dict) else 'N/A'}")
@@ -789,14 +790,29 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
                         "articles": {
                             "type": "array",
                             "items": {
-                                "type": "object",
-                                "properties": {
-                                    "article_number": {"type": "string"},  # "第1条" または "署名欄"
-                                    "title": {"type": "string"},
-                                    "content": {"type": "string"},
-                                    "table_number": {"type": "string"}  # 表の場合のみ
-                                },
-                                "required": ["content", "title"]  # titleも必須にする
+                                "anyOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "article_number": {"type": "string"},
+                                            "title": {"type": "string"},
+                                            "content": {"type": "string"},
+                                            "table_number": {"type": "string"}
+                                        },
+                                        "required": ["content", "title"]
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "title": {"type": "string"},
+                                            "party": {"type": "string"},
+                                            "start_date": {"type": "string"},
+                                            "end_date": {"type": "string"},
+                                            "conclusion_date": {"type": "string"}
+                                        },
+                                        "required": ["title", "party"]
+                                    }
+                                ]
                             }
                         }
                     },
@@ -829,7 +845,7 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
 
 抽出指示:
 1. success: 常にtrue
-2. info部分:
+2. info部分（1つ目の契約書の情報のみ）:
    - title: 契約書のタイトル（見つからない場合はファイル名を使用）
    - party: 契約当事者をカンマ区切りで記載（例: "株式会社A,株式会社B"）
    - start_date: 契約開始日（YYYY-MM-DD形式、見つからない場合は空文字列）
@@ -851,6 +867,32 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str) -> O
 - 表や図がある場合はHTML形式でcontentに含めてください
 - 署名欄も必ず1つの条項として扱ってください
 - 出力は必ず完全なJSON形式で、途中で切れることなく最後まで出力してください
+
+【複数契約書がある場合の特別ルール】:
+1. 契約書内部ドキュメントと契約書の区切りを正確に判別:
+   - 「頭書」「要項」「契約書本文」「用紙」「条件表」「概要」「特約」「細則」「別紙」「仕様書」「別添」「図面」「約款」「派遣個別契約票契約基本情報」「定義一覧表」などは契約書の内部ドキュメントであり、区切りではありません
+   - これらは1つの契約書を構成する要素として、同じarticles配列内に含めてください
+   - ドキュメントごとのタイトル、契約当事者、契約条項、署名などの重要な情報が分割後も完全に保持されるように調査してください
+   - 分割により情報の欠如や漏れが発生しないよう、慎重に分析してください
+
+2. 契約書の終了を示す箇所（「以上」等）は、以下の形式で統一:
+   {{
+     "article_number": "",
+     "title": "契約書終了",
+     "content": "----------",
+     "table_number": ""
+   }}
+
+3. 2つ目以降の契約書が始まる場合、契約書終了の直後に契約書基本情報をそのまま挿入:
+   {{
+     "title": "[契約書タイトル]",
+     "party": "[当事者をカンマ区切り]",
+     "start_date": "[YYYY-MM-DD または空文字列]",
+     "end_date": "[YYYY-MM-DD または空文字列]",
+     "conclusion_date": "[YYYY-MM-DD または空文字列]"
+   }}
+
+4. その後、2つ目の契約書の条項を続けて記載
 """
 
         # Vertex AIに送信して構造化出力を取得
@@ -917,14 +959,29 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
                         "articles": {
                             "type": "array",
                             "items": {
-                                "type": "object",
-                                "properties": {
-                                    "article_number": {"type": "string"},  # "第1条" または "署名欄"
-                                    "title": {"type": "string"},
-                                    "content": {"type": "string"},
-                                    "table_number": {"type": "string"}  # 表の場合のみ
-                                },
-                                "required": ["content", "title"]  # titleも必須にする
+                                "anyOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "article_number": {"type": "string"},
+                                            "title": {"type": "string"},
+                                            "content": {"type": "string"},
+                                            "table_number": {"type": "string"}
+                                        },
+                                        "required": ["content", "title"]
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "title": {"type": "string"},
+                                            "party": {"type": "string"},
+                                            "start_date": {"type": "string"},
+                                            "end_date": {"type": "string"},
+                                            "conclusion_date": {"type": "string"}
+                                        },
+                                        "required": ["title", "party"]
+                                    }
+                                ]
                             }
                         }
                     },
@@ -959,7 +1016,7 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
 
 抽出指示:
 1. success: 常にtrue
-2. info部分:
+2. info部分（1つ目の契約書の情報のみ）:
    - title: 契約書のタイトル（見つからない場合はファイル名を使用）
    - party: 契約当事者をカンマ区切りで記載（例: "株式会社A,株式会社B"）
    - start_date: 契約開始日（YYYY-MM-DD形式、見つからない場合は空文字列）
@@ -981,8 +1038,34 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
 - 表や図がある場合はHTML形式でcontentに含めてください
 - 署名欄も必ず1つの条項として扱ってください
 - 出力は必ず完全なJSON形式で、途中で切れることなく最後まで出力してください
+
+【複数契約書がある場合の特別ルール】:
+1. 契約書内部ドキュメントと契約書の区切りを正確に判別:
+   - 「頭書」「要項」「契約書本文」「用紙」「条件表」「概要」「特約」「細則」「別紙」「仕様書」「別添」「図面」「約款」「派遣個別契約票契約基本情報」「定義一覧表」などは契約書の内部ドキュメントであり、区切りではありません
+   - これらは1つの契約書を構成する要素として、同じarticles配列内に含めてください
+   - ドキュメントごとのタイトル、契約当事者、契約条項、署名などの重要な情報が分割後も完全に保持されるように調査してください
+   - 分割により情報の欠如や漏れが発生しないよう、慎重に分析してください
+
+2. 契約書の終了を示す箇所（「以上」等）は、以下の形式で統一:
+   {{
+     "article_number": "",
+     "title": "契約書終了",
+     "content": "----------",
+     "table_number": ""
+   }}
+
+3. 2つ目以降の契約書が始まる場合、契約書終了の直後に契約書基本情報をそのまま挿入:
+   {{
+     "title": "[契約書タイトル]",
+     "party": "[当事者をカンマ区切り]",
+     "start_date": "[YYYY-MM-DD または空文字列]",
+     "end_date": "[YYYY-MM-DD または空文字列]",
+     "conclusion_date": "[YYYY-MM-DD または空文字列]"
+   }}
+
+4. その後、2つ目の契約書の条項を続けて記載
 """
-        
+
         # Vertex AIに送信して構造化出力を取得
         response = model.generate_content(
             prompt,
