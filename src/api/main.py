@@ -908,11 +908,32 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str, work
 4. その後、2つ目の契約書の条項を続けて記載
 """
 
-        # Vertex AIに送信して構造化出力を取得
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
+        # Vertex AIに送信して構造化出力を取得（タイムアウト対策）
+        # ページ数が多い場合、60秒のデフォルトタイムアウトでは不十分なため非同期版を使用
+        # asyncio.run()ではなくnew_event_loop()を使用してFlaskとの競合を回避
+        import asyncio
+
+        async def generate_with_timeout():
+            response = await model.generate_content_async(
+                prompt,
+                generation_config=generation_config
+            )
+            return response
+
+        # 新しいイベントループを作成（Flaskの既存ループと競合しない）
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # 最大タイムアウト（3600秒 = 1時間）を設定
+            # 注意: Cloud Runのリクエストタイムアウトも3600秒に設定する必要があります
+            response = loop.run_until_complete(
+                asyncio.wait_for(generate_with_timeout(), timeout=3600)
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"⏱️ Timeout after 3600 seconds while generating structured output")
+            return None
+        finally:
+            loop.close()
 
         # JSONとしてパース
         try:
@@ -929,7 +950,7 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str, work
 
             try:
                 upload_json_to_gcs(
-                    {"error": str(json_error), "response": response.text},
+                    {"error": str(json_error), "response": response.text, "response_length": len(response.text)},
                     bucket_name,
                     error_path.replace('.txt', '.json')
                 )
@@ -1097,11 +1118,32 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
 4. その後、2つ目の契約書の条項を続けて記載
 """
 
-        # Vertex AIに送信して構造化出力を取得
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config
-        )
+        # Vertex AIに送信して構造化出力を取得（タイムアウト対策）
+        # ページ数が多い場合、60秒のデフォルトタイムアウトでは不十分なため非同期版を使用
+        # asyncio.run()ではなくnew_event_loop()を使用してFlaskとの競合を回避
+        import asyncio
+
+        async def generate_with_timeout():
+            response = await model.generate_content_async(
+                prompt,
+                generation_config=generation_config
+            )
+            return response
+
+        # 新しいイベントループを作成（Flaskの既存ループと競合しない）
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # 最大タイムアウト（3600秒 = 1時間）を設定
+            # 注意: Cloud Runのリクエストタイムアウトも3600秒に設定する必要があります
+            response = loop.run_until_complete(
+                asyncio.wait_for(generate_with_timeout(), timeout=3600)
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"⏱️ Timeout after 3600 seconds while generating structured output")
+            return None
+        finally:
+            loop.close()
 
         # JSONとしてパース
         structured_data = json.loads(response.text)
