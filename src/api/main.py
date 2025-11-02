@@ -223,58 +223,44 @@ def get_project_root():
 def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
     """
     main_pipeline.pyを実行してOCR処理を行う
-    
+
     Args:
         pdf_path: 処理対象のPDFファイルパス
-        
+
     Returns:
-        Dict: 処理結果
+        Dict: 処理結果（パイプライン結果を含む）
     """
     try:
-        project_root = get_project_root()
-        main_pipeline_path = project_root / "src" / "main_pipeline.py"
-        
-        if not main_pipeline_path.exists():
-            raise FileNotFoundError(f"main_pipeline.py not found: {main_pipeline_path}")
-        
-        # main_pipeline.pyを実行
-        cmd = [
-            sys.executable,
-            str(main_pipeline_path),
-            "--input", pdf_path
-        ]
-        
-        logger.info(f"🚀 Running main_pipeline.py with command: {' '.join(cmd)}")
-        logger.info(f"🔍 Working directory for subprocess: {project_root}")
+        # main_pipeline.pyをPythonモジュールとして直接実行
+        from src.main_pipeline import DocumentOCRPipeline
+        import asyncio
 
-        result = subprocess.run(
-            cmd,
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            encoding='utf-8'
-        )
-        
-        if result.returncode == 0:
-            logger.info("✅ main_pipeline.py executed successfully")
-            return {
-                "success": True,
-                "stdout": result.stdout,
-                "stderr": result.stderr
-            }
+        project_root = get_project_root()
+        config_path = project_root / "config.yml"
+
+        logger.info(f"🚀 Running main pipeline for: {pdf_path}")
+
+        # パイプラインインスタンスを作成
+        pipeline = DocumentOCRPipeline(str(config_path))
+
+        # 非同期処理を実行
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            pipeline_result = loop.run_until_complete(pipeline.run(pdf_path))
+        finally:
+            loop.close()
+
+        if pipeline_result.get("success"):
+            logger.info("✅ main_pipeline executed successfully")
+            return pipeline_result
         else:
-            logger.error(f"❌ main_pipeline.py failed with return code: {result.returncode}")
-            logger.error(f"❌ STDOUT: {result.stdout}")
-            logger.error(f"❌ STDERR: {result.stderr}")
-            return {
-                "success": False,
-                "error": f"Pipeline execution failed: {result.stderr}",
-                "stdout": result.stdout,
-                "stderr": result.stderr
-            }
+            logger.error(f"❌ main_pipeline failed: {pipeline_result.get('error')}")
+            return pipeline_result
 
     except Exception as e:
-        logger.error(f"❌ Error running main_pipeline.py: {e}")
+        logger.error(f"❌ Error running main_pipeline: {e}")
+        logger.error(traceback.format_exc())
         return {
             "success": False,
             "error": str(e)
