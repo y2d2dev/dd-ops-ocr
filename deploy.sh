@@ -27,7 +27,9 @@ gcloud run services update $SERVICE_NAME \
   --image $IMAGE_NAME \
   --memory 2Gi \
   --timeout 3600 \
-  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCS_BUCKET_NAME=app_contracts,DD_OPS_MODELS_BUCKET=dd_ops_models,PYTHONDONTWRITEBYTECODE=1,PYTHONUNBUFFERED=1,GCP_PROJECT_ID=$PROJECT_ID,GCP_LOCATION=us-central1,DOCUMENT_AI_PROJECT_ID=75499681521,DOCUMENT_AI_PROCESSOR_ID=599b6ebb19fa1478,DOCUMENT_AI_LOCATION=us"
+  --vpc-connector=dd-ops-connector \
+  --vpc-egress=private-ranges-only \
+  --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCS_BUCKET_NAME=app_contracts,DD_OPS_MODELS_BUCKET=dd_ops_models,PYTHONDONTWRITEBYTECODE=1,PYTHONUNBUFFERED=1,GCP_PROJECT_ID=$PROJECT_ID,GCP_LOCATION=us-central1,DOCUMENT_AI_PROJECT_ID=75499681521,DOCUMENT_AI_PROCESSOR_ID=599b6ebb19fa1478,DOCUMENT_AI_LOCATION=us,DATABASE_URL=postgresql://postgres:qjFJ8foxA2Qy722mqeweQ@10.1.0.3:5432/dd_ops"
 
 echo "✅ デプロイ完了！"
 echo "🔗 サービスURL: https://$SERVICE_NAME-$REGION.run.app"

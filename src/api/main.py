@@ -6,11 +6,13 @@ import shutil
 from flask import Flask, request, jsonify
 from datetime import datetime
 import traceback
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from google.cloud import storage
 import subprocess
 import sys
 from pathlib import Path
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # UTF-8エンコーディングを確実にする
 os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
@@ -50,6 +52,164 @@ def initialize_models():
 
 # アプリケーション起動時にモデルを初期化
 initialize_models()
+
+# ================================
+# Database Connection
+# ================================
+
+def get_db_connection():
+    """PostgreSQLデータベースへの接続を取得"""
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is not set")
+
+    try:
+        conn = psycopg2.connect(database_url)
+        return conn
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to database: {e}")
+        raise
+
+def get_risks_from_db(workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+    """
+    データベースからリスクタイプを取得する
+
+    Args:
+        workspace_id: ワークスペースID（オプション）
+        selected_risk_ids: 選択されたリスクIDのリスト（オプション）
+
+    Returns:
+        List[Dict]: リスク情報のリスト
+
+    Logic:
+        - selected_risk_idsが指定された場合: そのIDのリスクのみを取得（カスタム実行）
+        - selected_risk_idsがない場合: デフォルトリスク（workspace_id=null）のみを取得
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        if selected_risk_ids and len(selected_risk_ids) > 0:
+            # カスタム実行: 指定されたIDのリスクのみ取得
+            placeholders = ','.join(['%s'] * len(selected_risk_ids))
+            query = f"""
+                SELECT id, title, prompt, description, "workspaceId"
+                FROM "Risk"
+                WHERE id IN ({placeholders})
+                ORDER BY id ASC
+            """
+            cursor.execute(query, selected_risk_ids)
+        else:
+            # デフォルト実行: workspace_id=nullのリスクのみ取得
+            query = """
+                SELECT id, title, prompt, description, "workspaceId"
+                FROM "Risk"
+                WHERE "workspaceId" IS NULL
+                ORDER BY id ASC
+            """
+            cursor.execute(query)
+
+        risks = cursor.fetchall()
+        cursor.close()
+
+        # RealDictRowをdictに変換
+        return [dict(risk) for risk in risks]
+
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch risks from database: {e}")
+        # フォールバック: 空のリストを返す
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def calculate_total_page_count(pipeline_result: Dict[str, Any]) -> int:
+    """
+    パイプライン結果から分割後の総ページ数を計算
+
+    Args:
+        pipeline_result: パイプライン実行結果
+
+    Returns:
+        int: 分割後の総ページ数（各ページのpage_countの合計）
+    """
+    try:
+        # Step4の結果からpage_count_distributionを取得
+        step4_result = pipeline_result.get("steps", {}).get("step4_processing", {})
+        summary = step4_result.get("summary", {})
+        page_count_distribution = summary.get("page_count_distribution", {})
+
+        if not page_count_distribution:
+            logger.warning("⚠️ page_count_distribution not found in pipeline result")
+            return 0
+
+        # page_count_distribution: {1: 5, 2: 3, 3: 1} のような形式
+        # これは「page_count=1のページが5つ、page_count=2のページが3つ、page_count=3のページが1つ」という意味
+        # 分割後の総ページ数 = 1*5 + 2*3 + 3*1 = 5 + 6 + 3 = 14
+        total_page_count = 0
+        for page_count, count in page_count_distribution.items():
+            # page_countは文字列の場合があるので整数に変換
+            try:
+                pc = int(page_count)
+                cnt = int(count)
+                total_page_count += pc * cnt
+                logger.debug(f"  page_count={pc}: {cnt}ページ → {pc * cnt}ページ分")
+            except (ValueError, TypeError):
+                logger.warning(f"⚠️ Invalid page_count_distribution entry: {page_count}={count}")
+                continue
+
+        return total_page_count
+
+    except Exception as e:
+        logger.error(f"❌ Error calculating total page count: {e}")
+        logger.error(traceback.format_exc())
+        return 0
+
+def save_page_count_to_db(project_id: str, total_page_count: int) -> bool:
+    """
+    分割後のページ数をデータベースに保存する
+
+    Args:
+        project_id: プロジェクトID（文字列）
+        total_page_count: 分割後の総ページ数
+
+    Returns:
+        bool: 保存が成功したかどうか
+    """
+    conn = None
+    try:
+        # project_idを整数に変換
+        try:
+            project_id_int = int(project_id)
+        except (ValueError, TypeError):
+            logger.error(f"❌ Invalid project_id format: {project_id}")
+            return False
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # OcrPageCountテーブルに挿入
+        query = """
+            INSERT INTO "OcrPageCount" ("projectId", "pageCount", "createdAt")
+            VALUES (%s, %s, NOW())
+        """
+        cursor.execute(query, (project_id_int, total_page_count))
+        conn.commit()
+        cursor.close()
+
+        logger.info(f"✅ Page count saved to database: projectId={project_id_int}, pageCount={total_page_count}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Failed to save page count to database: {e}")
+        logger.error(traceback.format_exc())
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 def get_project_root():
     """プロジェクトのルートディレクトリを取得"""
@@ -342,10 +502,24 @@ def pubsub_push():
         logger.info(f"  - Message keys: {list(pubsub_message.keys()) if isinstance(pubsub_message, dict) else 'Not a dict'}")
         logger.info(f"  - Full message: {json.dumps(pubsub_message, indent=2)}")
 
-        # attributesからbucketIdを取得
+        # attributesからbucketId, workspaceId, selectedRiskIdsを取得
         attributes = pubsub_message.get("attributes", {})
         bucket_id = attributes.get("bucketId", "")
+        workspace_id_from_attr = attributes.get("workspaceId")
+        selected_risk_ids_str = attributes.get("selectedRiskIds")
+
         logger.info(f"📦 Bucket ID from attributes: {bucket_id}")
+        logger.info(f"📦 Workspace ID from attributes: {workspace_id_from_attr}")
+        logger.info(f"📦 Selected Risk IDs from attributes: {selected_risk_ids_str}")
+
+        # selectedRiskIdsをパース（カンマ区切りの文字列を整数配列に変換）
+        selected_risk_ids = None
+        if selected_risk_ids_str:
+            try:
+                selected_risk_ids = [int(id.strip()) for id in selected_risk_ids_str.split(",") if id.strip()]
+                logger.info(f"📊 Parsed selected risk IDs: {selected_risk_ids}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse selectedRiskIds: {e}")
 
         if isinstance(pubsub_message.get("data"), str):
             try:
@@ -406,23 +580,40 @@ def pubsub_push():
         workspace_id = name_parts[0]
         project_id = name_parts[1]
         filename = "/".join(name_parts[2:])
-        
+
         logger.info("✨ EXTRACTED INFO:")
         logger.info(f"  - Workspace ID: {workspace_id}")
         logger.info(f"  - Project ID: {project_id}")
         logger.info(f"  - Filename: {filename}")
-        
+
         if not filename.lower().endswith('.pdf'):
             logger.info(f"⚠️ Ignoring non-PDF file: {filename}")
             return jsonify({"message": "File ignored (not a PDF)"}), 200
-            
+
         logger.info(f"🚀 Starting PDF processing - workspace: {workspace_id}, project: {project_id}, file: {filename}")
 
         # bucketIdがない場合はobject_bucketをフォールバック
         target_bucket = bucket_id if bucket_id else object_bucket
         logger.info(f"🪣 Using bucket: {target_bucket}")
 
-        result = process_single_pdf(target_bucket, object_name, workspace_id, project_id)
+        # workspace_idを整数に変換（attributesから取得した値、なければパスから）
+        workspace_id_int = None
+        if workspace_id_from_attr:
+            try:
+                workspace_id_int = int(workspace_id_from_attr)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse workspaceId from attributes: {e}")
+
+        if workspace_id_int is None:
+            try:
+                workspace_id_int = int(workspace_id)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse workspaceId from path: {e}")
+
+        logger.info(f"📊 Final workspace_id (int): {workspace_id_int}")
+        logger.info(f"📊 Final selected_risk_ids: {selected_risk_ids}")
+
+        result = process_single_pdf(target_bucket, object_name, workspace_id, project_id, workspace_id_int, selected_risk_ids)
         
         response = {
             "workspace_id": workspace_id,
@@ -555,16 +746,18 @@ def process_test_pdf(pdf_filename: Optional[str] = None) -> Dict[str, Any]:
             'error': str(e)
         }
 
-def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, project_id: str) -> Dict[str, Any]:
+def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, project_id: str, workspace_id_int: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> Dict[str, Any]:
     """
     単一のPDFファイルを処理
-    
+
     Args:
         bucket_name: GCSバケット名
         object_name: オブジェクトパス (workspace_id/project_id/filename.pdf)
-        workspace_id: ワークスペースID
+        workspace_id: ワークスペースID（文字列）
         project_id: プロジェクトID
-    
+        workspace_id_int: ワークスペースID（整数、リスク取得用）
+        selected_risk_ids: 選択されたリスクIDのリスト（オプション）
+
     Returns:
         処理結果を含む辞書
     """
@@ -618,6 +811,18 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             logger.info(f"🔍 Files in result_dir: {[f.name for f in all_files]}")
         else:
             logger.warning(f"⚠️ result_dir does not exist: {result_dir}")
+
+        # 分割後のページ数を計算してDBに保存
+        try:
+            total_page_count = calculate_total_page_count(pipeline_result)
+            if total_page_count > 0:
+                save_page_count_to_db(project_id, total_page_count)
+                logger.info(f"📊 Total page count after split: {total_page_count}")
+            else:
+                logger.warning(f"⚠️ Could not calculate page count from pipeline result")
+        except Exception as e:
+            logger.error(f"❌ Failed to save page count: {e}")
+            # ページ数保存失敗してもOCR処理は続行
 
         # 追加の候補パスもチェック
         alternative_paths = [
@@ -711,7 +916,7 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
                         file_content = f.read()
 
                     # Geminiの構造化出力を使用（ローカルファイル版）
-                    structured_result = convert_local_text_to_contract_schema(file_content, basename, workspace_id, project_id, output_bucket)
+                    structured_result = convert_local_text_to_contract_schema(file_content, basename, workspace_id, project_id, output_bucket, workspace_id_int, selected_risk_ids)
                     if structured_result:
                         # 構造化されたJSONをafter_ocrに保存
                         json_output_path = f"{workspace_id}/{project_id}/after_ocr/{basename}.json"
@@ -754,16 +959,324 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
             'error': str(e)
         }
 
-def convert_local_text_to_contract_schema(file_content: str, basename: str, workspace_id: str, project_id: str, bucket_name: str) -> Optional[Dict[str, Any]]:
+def split_contracts_by_termination(articles: list) -> list:
+    """
+    契約書配列を「契約書終了」で分割する
+
+    Args:
+        articles: 条文配列
+
+    Returns:
+        契約書ごとに分割された配列のリスト
+    """
+    contracts = []
+    current_contract = []
+    current_info = None
+
+    for article in articles:
+        # 契約書基本情報（2つ目以降の契約書）を検出
+        if "title" in article and "party" in article and "article_number" not in article:
+            current_info = article
+            continue
+
+        # 契約書終了を検出
+        if article.get("title") == "契約書終了" and article.get("content") == "----------":
+            if current_contract:
+                contracts.append({
+                    "info": current_info,
+                    "articles": current_contract
+                })
+                current_contract = []
+                current_info = None
+        else:
+            current_contract.append(article)
+
+    # 最後の契約書を追加
+    if current_contract:
+        contracts.append({
+            "info": current_info,
+            "articles": current_contract
+        })
+
+    return contracts
+
+
+def classify_contract_risks(articles: list, target_company: str, workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> list:
+    """
+    契約書条文からリスクを分類する（Vertex AI使用）
+
+    Args:
+        articles: 条文配列
+        target_company: 対象会社名
+        workspace_id: ワークスペースID（オプション）
+        selected_risk_ids: 選択されたリスクIDのリスト（オプション）
+
+    Returns:
+        リスク分類結果の配列
+    """
+    try:
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig, FunctionDeclaration, Tool
+
+        project_id_env = os.getenv('GCP_PROJECT_ID')
+        location = os.getenv('GCP_LOCATION', 'us-central1')
+        if not project_id_env:
+            logger.error("GCP_PROJECT_ID環境変数が設定されていません")
+            return []
+
+        vertexai.init(project=project_id_env, location=location)
+
+        # DBからリスクタイプを取得
+        risks = get_risks_from_db(workspace_id=workspace_id, selected_risk_ids=selected_risk_ids)
+        if not risks:
+            logger.error("❌ No risks found in database")
+            return []
+
+        logger.info(f"📊 Fetched {len(risks)} risk types from database")
+
+        # リスクIDのリストを生成（文字列として）
+        risk_ids = [str(risk['id']) for risk in risks]
+
+        # Function Declaration（リスク分類結果を受け取る関数定義）
+        set_classifications_func = FunctionDeclaration(
+            name="setClassifications",
+            description="契約書のリスク分類結果を設定する",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "classifications": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string", "description": "リスク条文の原文"},
+                                "type": {"type": "string", "enum": risk_ids, "description": f"リスクタイプID（{', '.join(risk_ids)}）"},
+                                "reason": {"type": "string", "description": "リスクの理由"},
+                                "pageNumber": {"type": "integer", "description": "ページ番号（不明は-1）"},
+                                "articleInfo": {"type": "string", "description": "条文番号（例: 第10条）"},
+                                "articleTitle": {"type": "string", "description": "条文タイトル"},
+                                "articleOverview": {"type": "string", "description": "柱書"},
+                                "specificClause": {"type": "string", "description": "具体的な号"}
+                            },
+                            "required": ["text", "type", "reason", "pageNumber"]
+                        }
+                    }
+                },
+                "required": ["classifications"]
+            }
+        )
+
+        # ツール設定
+        risk_classification_tool = Tool(
+            function_declarations=[set_classifications_func]
+        )
+
+        # モデル初期化
+        model = GenerativeModel(
+            'gemini-2.5-flash',
+            tools=[risk_classification_tool]
+        )
+
+        # 条文一覧を構築
+        articles_text = "\n".join([
+            f"### {article.get('article_number', '')} {article.get('title', '')}\n{article.get('content', '')}"
+            for article in articles
+        ])
+
+        # リスクタイプ説明を構築（DBから取得したリスクを使用）
+        risk_types_text = "\n\n".join([
+            f"{risk['id']}. {risk['title']}: {risk['description']}"
+            for risk in risks
+        ])
+
+        # プロンプト（簡略版 - 実際はTypeScriptの長いプロンプトを移植する必要がある）
+        prompt = f"""あなたはM&A法務DDに長けた弁護士です。対象会社「{target_company}」の視点でリスク条項を抽出してください。
+
+## 条文一覧
+{articles_text}
+
+## 利用可能なリスクタイプ
+{risk_types_text}
+
+不確実なら出力しない（アブステイン）。エビデンス不十分・主体不特定・判定が曖昧なら無出力。
+
+**setClassifications関数を使って、リスク分類結果を返してください。**
+"""
+
+        # Vertex AI呼び出し（タイムアウト対策）
+        import asyncio
+        from vertexai.generative_models import GenerationConfig
+
+        async def generate_with_timeout():
+            # Function Callingを強制するための設定
+            generation_config = GenerationConfig(
+                temperature=0.1,
+            )
+            response = await model.generate_content_async(
+                prompt,
+                generation_config=generation_config,
+            )
+            return response
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            response = loop.run_until_complete(
+                asyncio.wait_for(generate_with_timeout(), timeout=3600)
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"⏱️ Timeout after 3600 seconds while classifying risks")
+            return []
+        finally:
+            loop.close()
+
+        # Function Callの結果を取得
+        logger.info(f"📊 Response from Gemini: {response}")
+        logger.info(f"📊 Candidates: {response.candidates if hasattr(response, 'candidates') else 'No candidates'}")
+
+        # レスポンスの検証
+        if not response.candidates or len(response.candidates) == 0:
+            logger.error("❌ No candidates in response")
+            return []
+
+        candidate = response.candidates[0]
+        logger.info(f"📊 Candidate content: {candidate.content if hasattr(candidate, 'content') else 'No content'}")
+
+        if not hasattr(candidate, 'content') or not candidate.content.parts:
+            logger.error("❌ No content or parts in candidate")
+            return []
+
+        part = candidate.content.parts[0]
+        if not hasattr(part, 'function_call'):
+            logger.error(f"❌ No function_call in part. Part type: {type(part)}, Part: {part}")
+            return []
+
+        function_call = part.function_call
+
+        if function_call and function_call.name == "setClassifications":
+            classifications = function_call.args.get("classifications", [])
+            logger.info(f"✅ Successfully classified {len(classifications)} risks")
+
+            # IDを生成して返す
+            import time
+            import random
+            return [
+                {
+                    "id": f"{int(time.time() * 1000)}-{random.randint(100000, 999999)}",
+                    "text": c.get("text", ""),
+                    "type": c.get("type", ""),
+                    "reason": c.get("reason", ""),
+                    "pageNumber": c.get("pageNumber", -1),
+                    "articleInfo": c.get("articleInfo", ""),
+                    "articleTitle": c.get("articleTitle", ""),
+                    "articleOverview": c.get("articleOverview", ""),
+                    "specificClause": c.get("specificClause", "")
+                }
+                for c in classifications
+            ]
+
+        return []
+
+    except Exception as e:
+        logger.error(f"Error classifying contract risks: {str(e)}")
+        logger.error(traceback.format_exc())
+        return []
+
+
+def add_risks_to_contract_data(structured_data: Dict[str, Any], workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+    """
+    構造化された契約書データにリスク分類を追加する
+
+    Args:
+        structured_data: 構造化された契約書データ
+        workspace_id: ワークスペースID（オプション）
+        selected_risk_ids: 選択されたリスクIDのリスト（オプション）
+
+    Returns:
+        リスク分類が追加された契約書データ
+    """
+    try:
+        # TODO: 対象会社名は後でDBから取得する
+        # 現在はinfo.partyから取得（最初の当事者を対象会社とみなす）
+        main_party = structured_data.get("info", {}).get("party", "")
+        target_company = main_party.split(",")[0].strip() if main_party else "対象会社"
+
+        logger.info(f"🎯 Starting risk classification for target company: {target_company}")
+        if workspace_id:
+            logger.info(f"📦 Workspace ID: {workspace_id}")
+        if selected_risk_ids:
+            logger.info(f"🎯 Selected Risk IDs: {selected_risk_ids}")
+
+        # 契約書を分割
+        articles = structured_data.get("result", {}).get("articles", [])
+        contracts = split_contracts_by_termination(articles)
+
+        logger.info(f"📄 Found {len(contracts)} contract(s) in document")
+
+        # 各契約書ごとにリスク分類
+        contract_risks = []
+        for i, contract in enumerate(contracts):
+            contract_info = contract.get("info")
+            contract_articles = contract.get("articles", [])
+
+            # 対象会社名を特定（2つ目以降の契約書は個別のpartyから取得）
+            if contract_info and "party" in contract_info:
+                contract_party = contract_info.get("party", "")
+                contract_target = contract_party.split(",")[0].strip() if contract_party else target_company
+            else:
+                contract_target = target_company
+
+            logger.info(f"🔍 Classifying risks for contract {i+1}/{len(contracts)} (target: {contract_target})")
+            logger.info(f"📊 Contract {i+1} has {len(contract_articles)} articles")
+
+            # リスク分類実行（workspace_idとselected_risk_idsを渡す）
+            risks = classify_contract_risks(contract_articles, contract_target, workspace_id=workspace_id, selected_risk_ids=selected_risk_ids)
+
+            logger.info(f"✅ Contract {i+1} classification returned {len(risks)} risks")
+            for risk_idx, risk in enumerate(risks):
+                logger.info(f"   Risk {risk_idx+1}: {risk.get('articleInfo', 'N/A')} - {risk.get('type', 'N/A')}")
+
+            # 契約書ごとの情報を構築
+            contract_risks.append({
+                "contractIndex": i,
+                "targetCompany": contract_target,
+                "articleCount": len(contract_articles),
+                "risks": risks
+            })
+
+            logger.info(f"✅ Contract {i+1} completed with {len(risks)} risks")
+
+        # 元のデータにrisksキーを追加（契約書ごとに分割）
+        total_risks = sum(len(c["risks"]) for c in contract_risks)
+        structured_data["risks"] = {
+            "contracts": contract_risks
+        }
+        logger.info(f"✅ Total {total_risks} risks added to structured data ({len(contract_risks)} contract(s))")
+
+        return structured_data
+
+    except Exception as e:
+        logger.error(f"Error adding risks to contract data: {str(e)}")
+        logger.error(traceback.format_exc())
+        # エラーが発生してもrisksキーは追加（空の契約書配列）
+        structured_data["risks"] = {
+            "contracts": []
+        }
+        return structured_data
+
+
+def convert_local_text_to_contract_schema(file_content: str, basename: str, workspace_id: str, project_id: str, bucket_name: str, workspace_id_int: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> Optional[Dict[str, Any]]:
     """
     ローカルのテキストをVertex AIの構造化出力を使って契約書スキーマに変換
 
     Args:
         file_content: テキスト内容
         basename: ファイルのベース名
-        workspace_id: ワークスペースID
+        workspace_id: ワークスペースID（文字列）
         project_id: プロジェクトID
         bucket_name: GCSバケット名
+        workspace_id_int: ワークスペースID（整数、リスク取得用）
+        selected_risk_ids: 選択されたリスクIDのリスト（オプション）
 
     Returns:
         構造化された契約書データまたはNone
@@ -773,13 +1286,13 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str, work
         import vertexai
         from vertexai.generative_models import GenerativeModel, GenerationConfig
 
-        project_id = os.getenv('GCP_PROJECT_ID')
+        project_id_env = os.getenv('GCP_PROJECT_ID')
         location = os.getenv('GCP_LOCATION', 'us-central1')
-        if not project_id:
+        if not project_id_env:
             logger.error("GCP_PROJECT_ID環境変数が設定されていません")
             return None
 
-        vertexai.init(project=project_id, location=location)
+        vertexai.init(project=project_id_env, location=location)
 
         # 契約書スキーマの定義
         contract_schema = {
@@ -939,6 +1452,10 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str, work
         try:
             structured_data = json.loads(response.text)
             logger.info(f"Successfully structured contract data with {len(structured_data.get('result', {}).get('articles', []))} articles")
+
+            # 構造化JSON生成後、自動的にリスク分類を追加
+            structured_data = add_risks_to_contract_data(structured_data, workspace_id=workspace_id_int, selected_risk_ids=selected_risk_ids)
+
             return structured_data
         except json.JSONDecodeError as json_error:
             logger.error(f"Error in Vertex AI structured output: {str(json_error)}")
@@ -981,13 +1498,13 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
         import vertexai
         from vertexai.generative_models import GenerativeModel, GenerationConfig
 
-        project_id = os.getenv('GCP_PROJECT_ID')
+        project_id_env = os.getenv('GCP_PROJECT_ID')
         location = os.getenv('GCP_LOCATION', 'us-central1')
-        if not project_id:
+        if not project_id_env:
             logger.error("GCP_PROJECT_ID環境変数が設定されていません")
             return None
 
-        vertexai.init(project=project_id, location=location)
+        vertexai.init(project=project_id_env, location=location)
         
         # 契約書スキーマの定義
         contract_schema = {
@@ -1195,8 +1712,6 @@ def download_from_gcs(gcs_uri: str, local_path: str) -> str:
     """
     GCSからファイルをダウンロード
     """
-    import urllib.parse
-    
     if not gcs_uri.startswith('gs://'):
         raise ValueError(f"Invalid GCS URI: {gcs_uri}")
     
@@ -1269,10 +1784,8 @@ def download_from_gcs(gcs_uri: str, local_path: str) -> str:
                 except Exception as download_error:
                     logger.warning(f"Failed to download {blob.name}: {download_error}")
                     continue
-                    
+
         raise FileNotFoundError(f"Could not find or download blob matching: {blob_path}")
-    
-    return local_path
 
 def upload_file_to_gcs(local_path: str, bucket_name: str, blob_name: str) -> str:
     """
@@ -1320,6 +1833,97 @@ def upload_results_to_gcs(result: Dict[str, Any], bucket_name: str, prefix: str)
     blob.upload_from_string(result_json, content_type='application/json')
     
     return f"gs://{bucket_name}/{blob_name}"
+
+
+# ================================
+# Test Endpoints for DB Connection
+# ================================
+
+@app.route('/test/db-connection', methods=['GET'])
+def test_db_connection():
+    """
+    DB接続テスト用エンドポイント
+    """
+    try:
+        logger.info("🧪 Testing database connection...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Simple query to test connection
+        cursor.execute("SELECT version();")
+        db_version = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        logger.info(f"✅ Database connection successful! Version: {db_version[0] if db_version else 'Unknown'}")
+
+        return jsonify({
+            "success": True,
+            "message": "Database connection successful",
+            "db_version": db_version[0] if db_version else None
+        }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@app.route('/test/risks', methods=['GET'])
+def test_get_risks():
+    """
+    リスクタイプ取得テスト用エンドポイント
+
+    Query Parameters:
+        - workspace_id: ワークスペースID（オプション）
+        - selected_risk_ids: カンマ区切りのリスクID（例: 1,2,3）
+    """
+    try:
+        workspace_id_str = request.args.get('workspace_id')
+        selected_risk_ids_str = request.args.get('selected_risk_ids')
+
+        workspace_id = None
+        selected_risk_ids = None
+
+        if workspace_id_str:
+            try:
+                workspace_id = int(workspace_id_str)
+            except Exception as e:
+                return jsonify({"error": f"Invalid workspace_id: {e}"}), 400
+
+        if selected_risk_ids_str:
+            try:
+                selected_risk_ids = [int(id.strip()) for id in selected_risk_ids_str.split(",") if id.strip()]
+            except Exception as e:
+                return jsonify({"error": f"Invalid selected_risk_ids: {e}"}), 400
+
+        logger.info(f"🧪 Testing risk retrieval - workspace_id: {workspace_id}, selected_risk_ids: {selected_risk_ids}")
+
+        risks = get_risks_from_db(workspace_id=workspace_id, selected_risk_ids=selected_risk_ids)
+
+        logger.info(f"✅ Retrieved {len(risks)} risks from database")
+
+        return jsonify({
+            "success": True,
+            "count": len(risks),
+            "workspace_id": workspace_id,
+            "selected_risk_ids": selected_risk_ids,
+            "risks": risks
+        }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Failed to retrieve risks: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 
 
 if __name__ == '__main__':

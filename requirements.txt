@@ -11,6 +11,7 @@ flask
 gunicorn
 google-cloud-storage
 ultralytics
+psycopg2-binary
 
 # Development dependencies
 black
