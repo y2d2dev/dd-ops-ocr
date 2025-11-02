@@ -44,7 +44,6 @@ llm_evaluation:
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 32768    
 
   # 細かく設定する場合
   dewarp_judgment:
@@ -53,8 +52,7 @@ llm_evaluation:
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 32768
-  
+
   # OrientationDetector で使う LLM の設定
   orientation_judgment:
     provider: "gemini"
@@ -62,7 +60,6 @@ llm_evaluation:
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 32768
 
   page_count_etc_judgment:
     provider: "gemini"
@@ -70,7 +67,6 @@ llm_evaluation:
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 32768
   
   # OCR用の設定
   ocr:
@@ -79,7 +75,6 @@ llm_evaluation:
     max_retries: 3
     timeout: 30
     temperature: 0.1
-    max_output_tokens: 65536  # 65,536 tokens - Gemini 2.5 Flashの出力上限
   
   # API Key は .env ファイルで設定: GEMINI_API_KEY=your-key-here
 

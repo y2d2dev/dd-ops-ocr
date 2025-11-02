@@ -30,7 +30,6 @@ class GeminiOCREngine:
         self.config = config.get('gemini_ocr', {})
         self.model = self.config.get('model', 'gemini-2.0-flash-exp')  # TODO: Gemini 2.5 Proがリリースされたら変更
         self.temperature = self.config.get('temperature', 0.1)
-        self.max_output_tokens = self.config.get('max_output_tokens', 32768)
         self.max_retries = self.config.get('max_retries', 3)
         self.timeout = self.config.get('timeout', 60)
         
@@ -110,8 +109,7 @@ class GeminiOCREngine:
 
             # 生成設定
             generation_config = GenerationConfig(
-                temperature=self.temperature,
-                max_output_tokens=self.max_output_tokens
+                temperature=self.temperature
             )
 
             # API呼び出しを非同期で実行

@@ -26,7 +26,6 @@ class LLMOrientationEvaluator:
         self.max_retries = self.config.get('max_retries', 3)
         self.timeout = self.config.get('timeout', 30)
         self.temperature = self.config.get('temperature', 0.1)
-        self.max_output_tokens = self.config.get('max_output_tokens', 32768)
         
         # Vertex AI初期化用の環境変数チェック
         self.project_id = os.getenv('GCP_PROJECT_ID')
@@ -81,8 +80,7 @@ class LLMOrientationEvaluator:
 
             # 生成設定
             generation_config = GenerationConfig(
-                temperature=self.temperature,
-                max_output_tokens=self.max_output_tokens
+                temperature=self.temperature
             )
 
             # API呼び出し（非同期対応）
