@@ -247,7 +247,7 @@ def run_main_pipeline(pdf_path: str) -> Dict[str, Any]:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            pipeline_result = loop.run_until_complete(pipeline.run(pdf_path))
+            pipeline_result = loop.run_until_complete(pipeline.process_pdf(pdf_path))
         finally:
             loop.close()
 
@@ -1342,8 +1342,7 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str, work
         model = GenerativeModel('gemini-2.5-flash')
         generation_config = GenerationConfig(
             response_mime_type="application/json",
-            response_schema=contract_schema,
-            max_output_tokens=65535
+            response_schema=contract_schema
         )
 
         # プロンプトの作成
@@ -1556,8 +1555,7 @@ def convert_to_contract_schema(gcs_file_path: str, basename: str) -> Optional[Di
         model = GenerativeModel('gemini-2.5-flash')
         generation_config = GenerationConfig(
             response_mime_type="application/json",
-            response_schema=contract_schema,
-            max_output_tokens=65535
+            response_schema=contract_schema
         )
 
         # プロンプトの作成
