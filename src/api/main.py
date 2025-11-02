@@ -57,11 +57,31 @@ initialize_models()
 # Database Connection
 # ================================
 
-def get_db_connection():
-    """PostgreSQLデータベースへの接続を取得"""
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        raise ValueError("DATABASE_URL environment variable is not set")
+def get_db_connection(bucket_name: Optional[str] = None):
+    """
+    PostgreSQLデータベースへの接続を取得
+
+    Args:
+        bucket_name: GCSバケット名（app_contracts=本番, app_contracts_staging=STG）
+
+    Returns:
+        psycopg2接続オブジェクト
+    """
+    # バケット名でDB接続先を判定
+    if bucket_name == 'app_contracts_staging':
+        # STG環境のDB
+        database_url = os.getenv('DATABASE_URL_STAGING') or 'postgresql://postgres:Avop9ghE5uTR3mm@10.1.1.3:5432/dd_ops'
+        logger.info(f"🔧 Using STAGING database for bucket: {bucket_name}")
+    elif bucket_name == 'app_contracts':
+        # 本番環境のDB
+        database_url = os.getenv('DATABASE_URL') or 'postgresql://postgres:qjFJ8foxA2Qy722mqeweQ@10.1.0.3:5432/dd_ops'
+        logger.info(f"🔧 Using PRODUCTION database for bucket: {bucket_name}")
+    else:
+        # デフォルト（環境変数から取得）
+        database_url = os.getenv('DATABASE_URL')
+        if not database_url:
+            raise ValueError("DATABASE_URL environment variable is not set")
+        logger.info(f"🔧 Using default database (bucket: {bucket_name})")
 
     try:
         conn = psycopg2.connect(database_url)
@@ -70,13 +90,14 @@ def get_db_connection():
         logger.error(f"❌ Failed to connect to database: {e}")
         raise
 
-def get_risks_from_db(workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+def get_risks_from_db(workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None, bucket_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     データベースからリスクタイプを取得する
 
     Args:
         workspace_id: ワークスペースID（オプション）
         selected_risk_ids: 選択されたリスクIDのリスト（オプション）
+        bucket_name: GCSバケット名（STG/本番判定用）
 
     Returns:
         List[Dict]: リスク情報のリスト
@@ -87,7 +108,7 @@ def get_risks_from_db(workspace_id: Optional[int] = None, selected_risk_ids: Opt
     """
     conn = None
     try:
-        conn = get_db_connection()
+        conn = get_db_connection(bucket_name)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         if selected_risk_ids and len(selected_risk_ids) > 0:
@@ -166,13 +187,14 @@ def calculate_total_page_count(pipeline_result: Dict[str, Any]) -> int:
         logger.error(traceback.format_exc())
         return 0
 
-def save_page_count_to_db(project_id: str, total_page_count: int) -> bool:
+def save_page_count_to_db(project_id: str, total_page_count: int, bucket_name: str) -> bool:
     """
     分割後のページ数をデータベースに保存する
 
     Args:
         project_id: プロジェクトID（文字列）
         total_page_count: 分割後の総ページ数
+        bucket_name: GCSバケット名（STG/本番判定用）
 
     Returns:
         bool: 保存が成功したかどうか
@@ -186,7 +208,7 @@ def save_page_count_to_db(project_id: str, total_page_count: int) -> bool:
             logger.error(f"❌ Invalid project_id format: {project_id}")
             return False
 
-        conn = get_db_connection()
+        conn = get_db_connection(bucket_name)
         cursor = conn.cursor()
 
         # OcrPageCountテーブルに挿入
@@ -802,7 +824,7 @@ def process_single_pdf(bucket_name: str, object_name: str, workspace_id: str, pr
         try:
             total_page_count = calculate_total_page_count(pipeline_result)
             if total_page_count > 0:
-                save_page_count_to_db(project_id, total_page_count)
+                save_page_count_to_db(project_id, total_page_count, bucket_name)
                 logger.info(f"📊 Total page count after split: {total_page_count}")
             else:
                 logger.warning(f"⚠️ Could not calculate page count from pipeline result")
@@ -987,7 +1009,7 @@ def split_contracts_by_termination(articles: list) -> list:
     return contracts
 
 
-def classify_contract_risks(articles: list, target_company: str, workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> list:
+def classify_contract_risks(articles: list, target_company: str, workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None, bucket_name: Optional[str] = None) -> list:
     """
     契約書条文からリスクを分類する（Vertex AI使用）
 
@@ -1013,7 +1035,7 @@ def classify_contract_risks(articles: list, target_company: str, workspace_id: O
         vertexai.init(project=project_id_env, location=location)
 
         # DBからリスクタイプを取得
-        risks = get_risks_from_db(workspace_id=workspace_id, selected_risk_ids=selected_risk_ids)
+        risks = get_risks_from_db(workspace_id=workspace_id, selected_risk_ids=selected_risk_ids, bucket_name=bucket_name)
         if not risks:
             logger.error("❌ No risks found in database")
             return []
@@ -1169,7 +1191,7 @@ def classify_contract_risks(articles: list, target_company: str, workspace_id: O
         return []
 
 
-def add_risks_to_contract_data(structured_data: Dict[str, Any], workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+def add_risks_to_contract_data(structured_data: Dict[str, Any], workspace_id: Optional[int] = None, selected_risk_ids: Optional[List[int]] = None, bucket_name: Optional[str] = None) -> Dict[str, Any]:
     """
     構造化された契約書データにリスク分類を追加する
 
@@ -1216,7 +1238,7 @@ def add_risks_to_contract_data(structured_data: Dict[str, Any], workspace_id: Op
             logger.info(f"📊 Contract {i+1} has {len(contract_articles)} articles")
 
             # リスク分類実行（workspace_idとselected_risk_idsを渡す）
-            risks = classify_contract_risks(contract_articles, contract_target, workspace_id=workspace_id, selected_risk_ids=selected_risk_ids)
+            risks = classify_contract_risks(contract_articles, contract_target, workspace_id=workspace_id, selected_risk_ids=selected_risk_ids, bucket_name=bucket_name)
 
             logger.info(f"✅ Contract {i+1} classification returned {len(risks)} risks")
             for risk_idx, risk in enumerate(risks):
@@ -1439,7 +1461,7 @@ def convert_local_text_to_contract_schema(file_content: str, basename: str, work
             logger.info(f"Successfully structured contract data with {len(structured_data.get('result', {}).get('articles', []))} articles")
 
             # 構造化JSON生成後、自動的にリスク分類を追加
-            structured_data = add_risks_to_contract_data(structured_data, workspace_id=workspace_id_int, selected_risk_ids=selected_risk_ids)
+            structured_data = add_risks_to_contract_data(structured_data, workspace_id=workspace_id_int, selected_risk_ids=selected_risk_ids, bucket_name=bucket_name)
 
             return structured_data
         except json.JSONDecodeError as json_error:
