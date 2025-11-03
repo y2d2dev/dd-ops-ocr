@@ -28,7 +28,7 @@ class GeminiOCREngine:
                 - timeout: タイムアウト秒（デフォルト: 60）
         """
         self.config = config.get('gemini_ocr', {})
-        self.model = self.config.get('model', 'gemini-2.0-flash-exp')  # TODO: Gemini 2.5 Proがリリースされたら変更
+        self.model = self.config.get('model', 'gemini-2.5-flash')
         self.temperature = self.config.get('temperature', 0.1)
         self.max_retries = self.config.get('max_retries', 3)
         self.timeout = self.config.get('timeout', 60)
