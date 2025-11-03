@@ -70,7 +70,7 @@ def get_db_connection(bucket_name: Optional[str] = None):
     # バケット名でDB接続先を判定
     if bucket_name == 'app_contracts_staging':
         # STG環境のDB
-        database_url = os.getenv('DATABASE_URL_STAGING') or 'postgresql://postgres:Avop9ghE5uTR3mm@10.1.1.3:5432/dd_ops'
+        database_url = os.getenv('DATABASE_URL_STAGING') or 'postgresql://postgres:DYT:~K^sXc*5JCG7@10.1.2.3:5432/dd_ops'
         logger.info(f"🔧 Using STAGING database for bucket: {bucket_name}")
     elif bucket_name == 'app_contracts':
         # 本番環境のDB
